@@ -1,0 +1,17 @@
+# himmelcloak workspace. Native, no-browser Keycloak authentication for Linux.
+# See docs/plan.md, docs/roadmap.md, docs/architecture.md, docs/assignments/.
+[workspace]
+resolver = "2"
+members = ["crates/himmelcloak", "crates/himmelcloak-himmelblau"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "LGPL-3.0-or-later OR GPL-3.0-or-later"
+authors = ["Aidan Garske <aidan@wolfssl.com>"]
+repository = "https://github.com/aidangarske/himmelcloak"
+
+# Enforced by `cargo clippy` in CI (not by `cargo build`). Matches libhimmelblau discipline.
+[workspace.lints.clippy]
+todo = "deny"
+unimplemented = "deny"

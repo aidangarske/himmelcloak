@@ -1,0 +1,44 @@
+name: Resolve wolfSSL versions
+
+# Reusable workflow. Resolves the latest wolfSSL v*-stable tag at run time (so we never bump a
+# hardcoded version) and emits a matrix of [latest stable, master]. master surfaces upstream drift.
+on:
+  workflow_call:
+    outputs:
+      matrix:
+        description: 'JSON matrix include of wolfSSL refs (latest -stable + master)'
+        value: ${{ jobs.resolve.outputs.matrix }}
+      latest-stable:
+        description: 'Latest wolfSSL v*-stable tag resolved at run time'
+        value: ${{ jobs.resolve.outputs.latest-stable }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve wolfSSL version matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      latest-stable: ${{ steps.set.outputs.latest-stable }}
+    steps:
+      - name: Resolve latest -stable wolfSSL tag
+        id: set
+        run: |
+          set -euo pipefail
+          LATEST=$(git ls-remote --tags --refs https://github.com/wolfSSL/wolfssl.git 'v*-stable' \
+                     | awk -F/ '{print $NF}' | sort -V | tail -n 1)
+          if [ -z "${LATEST:-}" ]; then
+            echo "::error::Could not resolve latest wolfSSL -stable tag from remote"
+            exit 1
+          fi
+          echo "Latest stable wolfSSL: $LATEST"
+          echo "latest-stable=$LATEST" >> "$GITHUB_OUTPUT"
+          MATRIX=$(jq -nc --arg latest "$LATEST" '{
+            include: [
+              {"wolfssl-version":$latest,"wolfssl-ref":$latest},
+              {"wolfssl-version":"master","wolfssl-ref":"master"}
+            ]
+          }')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"

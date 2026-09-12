@@ -1,0 +1,21 @@
+name: keycloak-matrix
+on: [pull_request]
+
+# Flow suite against a real Keycloak across a version matrix, so a core-contract change fails a
+# PR here rather than a customer in production.
+jobs:
+  flow-suite:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        keycloak: ["26.0", "25.0", "24.0"] # latest + N-1 + LTS-ish; tune to the gov targets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: bring up Keycloak ${{ matrix.keycloak }} + seeded realm
+        run: |
+          echo "TODO:docker compose up Keycloak ${{ matrix.keycloak }} with testing/keycloak/realm-export.json"
+      - name: run flow suite
+        run: |
+          echo "TODO:cargo test --features full -- --include-ignored (oracle-backed)"

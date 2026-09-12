@@ -1,0 +1,14 @@
+[package]
+name = "himmelcloak-himmelblau"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "himmelblau IdProvider adapter over himmelcloak."
+
+[lints]
+workspace = true
+
+[dependencies]
+himmelcloak = { path = "../himmelcloak" }

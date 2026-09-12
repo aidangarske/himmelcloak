@@ -1,0 +1,5 @@
+{
+  "_comment": "Placeholder. Replace with a real export from the pinned Keycloak, seeded with ONE test user per auth method (password, TOTP, WebAuthn, X.509, recovery) plus a client configured for the flows himmelcloak drives.",
+  "realm": "himmelcloak-test",
+  "enabled": true
+}
