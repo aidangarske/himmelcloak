@@ -11,7 +11,7 @@ jobs:
       matrix:
         keycloak: ["26.0", "25.0", "24.0"] # latest + N-1 + LTS-ish; tune to the gov targets
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: bring up Keycloak ${{ matrix.keycloak }} + seeded realm
         run: |
