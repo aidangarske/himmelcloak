@@ -1,11 +1,9 @@
 name: Sync docs to wiki
 
-# The wiki is a generated mirror of docs/. Edit docs/ via pull requests; this publishes them to
-# the GitHub wiki on every merge to main. (Enable the wiki once in repo Settings first.)
+# The wiki is a generated mirror of docs/, published to the GitHub wiki on every push to main.
 on:
   push:
     branches: [main]
-    paths: ['docs/**']
   workflow_dispatch:
 
 permissions:
