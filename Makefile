@@ -1,6 +1,6 @@
 .PHONY: native build all-features test lint fmt oracle-up oracle-down test-live test-live-verbose docker-lint
 
-COMPOSE = docker compose -f testing/keycloak/docker-compose.yml
+COMPOSE = docker compose -f tests/keycloak/docker-compose.yml
 
 native:
 	scripts/build-native.sh
@@ -22,17 +22,17 @@ fmt:
 	cargo fmt --all
 
 oracle-up:
-	testing/keycloak/bootstrap-cert.sh
+	tests/keycloak/bootstrap-cert.sh
 	$(COMPOSE) up -d keycloak
 
 oracle-down:
 	$(COMPOSE) down -v
 
 test-live:
-	testing/keycloak/run.sh
+	tests/keycloak/run.sh
 
 test-live-verbose:
-	testing/keycloak/run.sh --verbose
+	tests/keycloak/run.sh --verbose
 
 docker-lint:
 	$(COMPOSE) build tester

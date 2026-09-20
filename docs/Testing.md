@@ -1,14 +1,14 @@
 # Keycloak test oracle
 
 The integration suite authenticates against an unmodified Keycloak container. Compose imports
-`testing/keycloak/realm-export.json`, which has a public OIDC client and the disposable `alice`
+`tests/keycloak/realm-export.json`, which has a public OIDC client and the disposable `alice`
 user. A generated test CA signs the HTTPS certificate for the `keycloak.test`
 Docker network alias.
 
 Run `make test-live` for the moving `latest` Keycloak image or set `KEYCLOAK_IMAGE` to another tag.
 Run `make oracle-down` afterward to remove the test server and its state.
 
-Run `testing/keycloak/run.sh --verbose` (or `make test-live-verbose`) to see
+Run `tests/keycloak/run.sh --verbose` (or `make test-live-verbose`) to see
 Himmelcloak's client steps and Keycloak's `LOGIN`/`LOGIN_ERROR` event lines.
 The trace reports outcomes and subjects but never prints passwords or tokens.
 CI enables the same client trace and server event output for each live run.

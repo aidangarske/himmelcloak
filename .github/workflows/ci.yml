@@ -19,7 +19,7 @@ jobs:
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          file: testing/build/Dockerfile
+          file: tests/build/Dockerfile
           load: true
           tags: himmelcloak-tester:ci
           cache-from: type=gha,scope=himmelcloak-native

@@ -57,7 +57,7 @@ for the Keycloak end-to-end suite.
 
 ## Prebuilt CI image
 
-The first branch run builds the native test image from `testing/build/Dockerfile`.
+The first branch run builds the native test image from `tests/build/Dockerfile`.
 Move that build into a separate image-publishing workflow and store the result
 at `ghcr.io/aidangarske/himmelcloak/tester`. Rebuild and publish it when the
 Dockerfile, native build script, Rust toolchain, or pinned wolfSSL/curl baseline

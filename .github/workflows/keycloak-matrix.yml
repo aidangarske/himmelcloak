@@ -28,15 +28,15 @@ jobs:
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          file: testing/build/Dockerfile
+          file: tests/build/Dockerfile
           load: true
           tags: himmelcloak-tester:ci
           cache-from: type=gha,scope=himmelcloak-native
           cache-to: type=gha,mode=max,scope=himmelcloak-native
       - name: Generate test certificate
-        run: testing/keycloak/bootstrap-cert.sh
+        run: tests/keycloak/bootstrap-cert.sh
       - name: Start stock Keycloak
-        run: docker compose -f testing/keycloak/docker-compose.yml up -d keycloak
+        run: docker compose -f tests/keycloak/docker-compose.yml up -d keycloak
       - name: Record server image
         run: |
           echo "Keycloak image channel: ${{ matrix.keycloak-ref }}"
@@ -44,17 +44,17 @@ jobs:
           docker image inspect "$KEYCLOAK_IMAGE" --format '{{index .RepoDigests 0}}'
       - name: Run live login suite
         run: |
-          docker compose -f testing/keycloak/docker-compose.yml run --rm \
+          docker compose -f tests/keycloak/docker-compose.yml run --rm \
             -e HIMMELCLOAK_TEST_VERBOSE=1 tester \
             cargo test --locked --test live_keycloak -- --ignored --nocapture
       - name: Show Keycloak authentication events
         if: always()
         run: |
-          docker compose -f testing/keycloak/docker-compose.yml logs --no-color keycloak \
-            | awk -f testing/keycloak/auth-events.awk
+          docker compose -f tests/keycloak/docker-compose.yml logs --no-color keycloak \
+            | awk -f tests/keycloak/auth-events.awk
       - name: Keycloak logs on failure
         if: failure()
-        run: docker compose -f testing/keycloak/docker-compose.yml logs --no-color keycloak
+        run: docker compose -f tests/keycloak/docker-compose.yml logs --no-color keycloak
       - name: Stop Keycloak
         if: always()
-        run: docker compose -f testing/keycloak/docker-compose.yml down -v
+        run: docker compose -f tests/keycloak/docker-compose.yml down -v

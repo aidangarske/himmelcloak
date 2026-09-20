@@ -8,7 +8,7 @@ else
     verbose=0
 fi
 if [[ $# -ne 0 ]]; then
-    echo 'Usage: testing/keycloak/run.sh [--verbose]' >&2
+    echo 'Usage: tests/keycloak/run.sh [--verbose]' >&2
     exit 2
 fi
 
