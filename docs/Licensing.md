@@ -7,6 +7,5 @@ Distribute a combined build under GPL-3.0 unless a separate commercial license c
 components. The dual license above continues to apply to this repository's own source. Hardware
 features may add further licensing obligations. No ordinary build is claimed to be FIPS validated.
 
-The root [LICENSE](../LICENSE) records the choice. The repository also includes
-the full [LGPL version 3](../LICENSE-LGPL-3.0) and
-[GPL version 3](../LICENSE-GPL-3.0) texts.
+The root [LICENSE](../LICENSE) records the choice and includes both full
+license texts.
