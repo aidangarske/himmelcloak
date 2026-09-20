@@ -1,0 +1,13 @@
+Himmelcloak's own source code is dual-licensed under either:
+
+  GNU Lesser General Public License, version 3 or later; or
+  GNU General Public License, version 3 or later.
+
+You may choose either license. The full texts are in LICENSE-LGPL-3.0 and
+LICENSE-GPL-3.0, respectively. The LGPL version 3 incorporates the GPL version
+3 terms, so both texts are included.
+
+SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+
+Dependencies retain their own licenses. See docs/Licensing.md for the default
+combined build's licensing notes.

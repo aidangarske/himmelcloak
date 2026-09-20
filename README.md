@@ -77,8 +77,10 @@ The version-controlled pages in [`docs/`](docs/) are the primary documentation:
 - [Project Structure](docs/Project-Structure.md)
 - [Licensing](docs/Licensing.md)
 
+See [Contributing](CONTRIBUTING.md) to work on the project.
+
 ## License
 
-The repository's own source is dual-licensed under LGPL-3.0-or-later OR
-GPL-3.0-or-later. The default build links GPL wolfSSL components; see
-[Licensing](docs/Licensing.md) for the combined-build terms.
+The repository's own source is [dual-licensed](LICENSE) under
+LGPL-3.0-or-later OR GPL-3.0-or-later. The default build links GPL wolfSSL
+components; see [Licensing](docs/Licensing.md) for the combined-build terms.

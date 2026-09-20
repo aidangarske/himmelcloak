@@ -3,6 +3,8 @@
 | Location | Purpose |
 | --- | --- |
 | `Cargo.toml` | Single crate manifest and feature flags |
+| `LICENSE` and `LICENSE-*` | Dual-license declaration and full license texts |
+| `CONTRIBUTING.md` | Contributor setup and pull request guidelines |
 | `src/` | Keycloak client and public API |
 | `src/lib.rs` | Rust library entry point and public exports |
 | `src/transport.rs` | HTTP boundary and wolfSSL-backed libcurl client |
