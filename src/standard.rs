@@ -52,6 +52,7 @@ pub(crate) async fn acquire(
         access_token: std::mem::take(&mut parsed.access_token),
         refresh_token: std::mem::take(&mut parsed.refresh_token),
         id_token: std::mem::take(&mut parsed.id_token),
+        verified_subject: None,
     })
 }
 

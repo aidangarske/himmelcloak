@@ -14,9 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: testing/build/Dockerfile
@@ -27,6 +27,6 @@ jobs:
       - name: Format
         run: docker run --rm -v "$PWD:/work" -w /work himmelcloak-tester:ci cargo fmt --all --check
       - name: Clippy
-        run: docker run --rm -v "$PWD:/work" -w /work himmelcloak-tester:ci cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        run: docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Unit tests
-        run: docker run --rm -v "$PWD:/work" -w /work himmelcloak-tester:ci cargo test --locked --workspace --lib
+        run: docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci cargo test --locked --lib

@@ -151,7 +151,8 @@ fn send_blocking(
     easy.follow_location(false).map_err(curl_error)?;
     easy.ssl_verify_peer(true).map_err(curl_error)?;
     easy.ssl_verify_host(true).map_err(curl_error)?;
-    easy.useragent("himmelcloak/0.1").map_err(curl_error)?;
+    easy.useragent(concat!("himmelcloak/", env!("CARGO_PKG_VERSION")))
+        .map_err(curl_error)?;
     if let Some(path) = ca_bundle {
         easy.cainfo(path).map_err(curl_error)?;
     }

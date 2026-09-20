@@ -63,12 +63,14 @@ pub struct RequiredActionAnswer {
     pub data: String,
 }
 
-/// OIDC tokens returned on completion.
+/// OIDC tokens and the identity verified during the login session.
 #[derive(Default)]
+#[non_exhaustive]
 pub struct Tokens {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub id_token: Option<String>,
+    pub(crate) verified_subject: Option<String>,
 }
 
 impl Drop for Tokens {
@@ -80,5 +82,6 @@ impl Drop for Tokens {
         if let Some(token) = &mut self.id_token {
             token.zeroize();
         }
+        self.verified_subject.zeroize();
     }
 }

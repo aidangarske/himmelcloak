@@ -41,17 +41,35 @@ jobs:
             echo "::error::Could not resolve latest wolfSSL or curl release tag from remote"
             exit 1
           fi
-          git ls-remote --exit-code --heads https://github.com/wolfSSL/wolfssl.git master >/dev/null
-          git ls-remote --exit-code --heads https://github.com/curl/curl.git master >/dev/null
-          echo "Latest stable wolfSSL: $WOLFSSL_LATEST"
-          echo "Latest stable curl: $CURL_LATEST"
+          resolve_tag_commit() {
+            local remote=$1 tag=$2 matches commit
+            matches=$(git ls-remote --exit-code --tags "$remote" "refs/tags/$tag^{}" "refs/tags/$tag")
+            commit=$(awk -v tag="$tag" '$2 == "refs/tags/" tag "^{}" { print $1; exit }' <<< "$matches")
+            if [ -z "$commit" ]; then
+              commit=$(awk -v tag="$tag" '$2 == "refs/tags/" tag { print $1; exit }' <<< "$matches")
+            fi
+            printf '%s\n' "$commit"
+          }
+          WOLFSSL_LATEST_COMMIT=$(resolve_tag_commit https://github.com/wolfSSL/wolfssl.git "$WOLFSSL_LATEST")
+          CURL_LATEST_COMMIT=$(resolve_tag_commit https://github.com/curl/curl.git "$CURL_LATEST")
+          WOLFSSL_MASTER_COMMIT=$(git ls-remote --exit-code --heads https://github.com/wolfSSL/wolfssl.git master | awk '{print $1}')
+          CURL_MASTER_COMMIT=$(git ls-remote --exit-code --heads https://github.com/curl/curl.git master | awk '{print $1}')
+          for commit in "$WOLFSSL_LATEST_COMMIT" "$CURL_LATEST_COMMIT" "$WOLFSSL_MASTER_COMMIT" "$CURL_MASTER_COMMIT"; do
+            [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid native dependency commit: $commit"; exit 1; }
+          done
+          echo "Latest stable wolfSSL: $WOLFSSL_LATEST at $WOLFSSL_LATEST_COMMIT"
+          echo "Latest stable curl: $CURL_LATEST at $CURL_LATEST_COMMIT"
+          echo "wolfSSL master: $WOLFSSL_MASTER_COMMIT"
+          echo "curl master: $CURL_MASTER_COMMIT"
           echo "latest-stable=$WOLFSSL_LATEST" >> "$GITHUB_OUTPUT"
           echo "curl-latest-stable=$CURL_LATEST" >> "$GITHUB_OUTPUT"
-          MATRIX=$(jq -nc --arg wolfssl "$WOLFSSL_LATEST" --arg curl "$CURL_LATEST" '{
+          MATRIX=$(jq -nc --arg wolfssl "$WOLFSSL_LATEST" --arg curl "$CURL_LATEST" \
+            --arg wolfssl_commit "$WOLFSSL_LATEST_COMMIT" --arg curl_commit "$CURL_LATEST_COMMIT" \
+            --arg wolfssl_master "$WOLFSSL_MASTER_COMMIT" --arg curl_master "$CURL_MASTER_COMMIT" '{
             include: [
-              {"name":"latest stable wolfSSL and curl","wolfssl-ref":$wolfssl,"curl-ref":$curl},
-              {"name":"wolfSSL master with stable curl","wolfssl-ref":"master","curl-ref":$curl},
-              {"name":"curl master with stable wolfSSL","wolfssl-ref":$wolfssl,"curl-ref":"master"}
+              {"name":"latest stable wolfSSL and curl","wolfssl-ref":$wolfssl,"wolfssl-commit":$wolfssl_commit,"curl-ref":$curl,"curl-commit":$curl_commit},
+              {"name":"wolfSSL master with stable curl","wolfssl-ref":"master","wolfssl-commit":$wolfssl_master,"curl-ref":$curl,"curl-commit":$curl_commit},
+              {"name":"curl master with stable wolfSSL","wolfssl-ref":$wolfssl,"wolfssl-commit":$wolfssl_commit,"curl-ref":"master","curl-commit":$curl_master}
             ]
           }')
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"

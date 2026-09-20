@@ -20,9 +20,9 @@ without one.
 | Method | Behavior |
 | --- | --- |
 | `acquire_token_by_password(user, password, totp)` | Direct Access Grant, when enabled on the Keycloak client |
-| `refresh_tokens(refresh_token)` | Obtain a new token set; the ID token may be absent if Keycloak omits it |
+| `refresh_tokens(&tokens)` | Refresh a verified session; keep its subject when Keycloak omits a new ID token |
 | `revoke_token(token)` | Revoke an access or refresh token |
-| `userinfo(&tokens)` | Fetch claims and compare the subject to the verified ID token |
+| `userinfo(&tokens)` | Fetch claims and compare the subject to the verified session |
 
 For a direct grant, `AuthenticationRejected` indicates rejected credentials or
 access, while `InvalidConfiguration` reports a Keycloak client or grant setting

@@ -10,6 +10,7 @@ use url::{Host, Url};
 use crate::error::{Error, Result};
 
 /// Runtime settings for a public Keycloak client.
+#[non_exhaustive]
 #[derive(Clone)]
 pub struct Config {
     pub server_url: Url,

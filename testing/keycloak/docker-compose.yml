@@ -30,10 +30,15 @@ services:
       KEYCLOAK_URL: https://keycloak.test:8443
       KEYCLOAK_CA: /work/testing/keycloak/.generated/ca.pem
       CARGO_HOME: /tmp/himmelcloak-cargo
+      CARGO_TARGET_DIR: /tmp/himmelcloak-target
     volumes:
       - ../..:/work
+      - cargo-target:/tmp/himmelcloak-target
     working_dir: /work
     depends_on:
       - keycloak
     entrypoint: ["/work/testing/keycloak/wait-and-test.sh"]
-    command: ["cargo", "test", "--locked", "-p", "himmelcloak", "--test", "live_keycloak", "--", "--ignored"]
+    command: ["cargo", "test", "--locked", "--test", "live_keycloak", "--", "--ignored"]
+
+volumes:
+  cargo-target:

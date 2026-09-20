@@ -19,7 +19,9 @@ CI runs the same test against the latest stable release tag and the `nightly`
 development image on every push and PR. CI resolves both image digests before
 starting the matrix, so a run records exactly which server builds it tested.
 The separate native dependency matrix resolves current stable and development
-refs for wolfSSL and curl; the standard build remains pinned to wolfSSL 5.9.2.
+refs to commit IDs before building wolfSSL and curl. The standard image uses
+fixed commits for wolfSSL 5.9.2 and curl 8.22.0. The image records both refs
+and commits in `/opt/himmelcloak-native/.himmelcloak-refs`.
 Each new login factor must add a live scenario before its feature is treated as
 complete.
 

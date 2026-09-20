@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use himmelcloak::config::Config;
 use himmelcloak::error::Error;
-use himmelcloak::{PublicClientApplication, Tokens};
+use himmelcloak::PublicClientApplication;
 
 fn trace(message: &str) {
     if std::env::var_os("HIMMELCLOAK_TEST_VERBOSE").is_some() {
@@ -39,7 +39,7 @@ async fn direct_grant_lifecycle() {
     trace("Keycloak rejected the incorrect password");
 
     trace("send alice with the correct password");
-    let tokens = app
+    let mut tokens = app
         .acquire_token_by_password("alice", "correct-horse-battery-staple", None)
         .await
         .unwrap();
@@ -56,26 +56,25 @@ async fn direct_grant_lifecycle() {
     } else {
         b'A'
     };
-    let tampered = Tokens {
-        access_token: String::new(),
-        refresh_token: None,
-        id_token: Some(String::from_utf8(forged).unwrap()),
-    };
+    let original = tokens.id_token.replace(String::from_utf8(forged).unwrap());
     assert!(matches!(
-        app.userinfo(&tampered).await,
+        app.userinfo(&tokens).await,
         Err(Error::TokenValidation(_))
     ));
+    tokens.id_token = original;
     trace("himmelcloak rejected a tampered ID-token signature");
 
     trace("refresh the Keycloak session");
-    let refresh = tokens.refresh_token.as_deref().expect("refresh token");
-    let refreshed = app.refresh_tokens(refresh).await.unwrap();
+    let refreshed = app.refresh_tokens(&tokens).await.unwrap();
     assert!(!refreshed.access_token.is_empty());
     trace("Keycloak accepted the refresh token and issued new tokens");
-    let revoked = refreshed.refresh_token.as_deref().unwrap_or(refresh);
+    let refreshed_user = app.userinfo(&refreshed).await.unwrap();
+    assert_eq!(refreshed_user["preferred_username"], "alice");
+    trace("refreshed session still resolves to alice");
+    let revoked = refreshed.refresh_token.as_deref().expect("refresh token");
     app.revoke_token(revoked).await.unwrap();
     assert!(matches!(
-        app.refresh_tokens(revoked).await,
+        app.refresh_tokens(&refreshed).await,
         Err(Error::AuthenticationRejected)
     ));
     trace("Keycloak rejected the revoked refresh token");

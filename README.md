@@ -18,9 +18,24 @@ official `wolfssl-wolfcrypt` Rust crate.
 
 ```mermaid
 flowchart LR
-    APP[Linux application] --> HC[Himmelcloak<br/>OIDC client]
-    HC --> HTTP[libcurl + wolfSSL] --> KC[Stock Keycloak]
-    HC --> CRYPTO[wolfCrypt<br/>token verification]
+    subgraph LINUX[Linux callers]
+        APP[Applications]
+        LOGIN[Himmelcloak PAM / SSH<br/>planned]
+    end
+
+    subgraph CORE[Himmelcloak]
+        API[PublicClientApplication]
+        OIDC[OIDC core<br/>discovery, grants, JWKS, userinfo]
+        FLOW[Native challenge flow<br/>planned]
+    end
+
+    APP --> API
+    LOGIN -.-> API
+    API --> OIDC
+    API -.-> FLOW
+    OIDC --> HTTP[libcurl + wolfSSL] --> KC[Stock Keycloak]
+    OIDC --> CRYPTO[wolfCrypt<br/>token verification]
+    FLOW -.-> HTTP
 ```
 
 See [Architecture](docs/Architecture.md) for the current implementation and

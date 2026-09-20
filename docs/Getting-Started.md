@@ -20,8 +20,8 @@ image digests at run time, then requires both to pass on every push and PR.
 
 On Linux, `make native` builds the same native libraries into `.native`. `make build`, `make test`,
 and `make lint` use them. The local build requires Autotools, libtool, pkg-config, clang, and a
-Rust 1.95 toolchain. `cargo test --workspace` includes live tests and requires the Keycloak
-environment; `make test` runs unit tests only.
+Rust 1.95 toolchain. Plain `cargo test` skips the ignored live tests;
+`make test` runs library unit tests only. Use `make test-live` for Keycloak.
 
 The test realm's user is `alice` with password `correct-horse-battery-staple`. These credentials
 are for the disposable Docker realm only.
