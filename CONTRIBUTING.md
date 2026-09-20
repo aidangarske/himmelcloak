@@ -17,6 +17,5 @@ use a focused feature branch and briefly explain the change in your pull
 request. The [development plan](docs/Development-Plan.md) outlines upcoming
 work.
 
-For sensitive security issues, contact the maintainers privately instead of
-opening a public issue. Do not share credentials, tokens, or private keys in
-public reports.
+For security issues, follow the [Security Policy](SECURITY.md) instead of
+opening a public issue.
