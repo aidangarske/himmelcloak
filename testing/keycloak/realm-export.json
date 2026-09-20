@@ -1,8 +1,10 @@
 {
   "realm": "himmelcloak-test",
   "enabled": true,
-  "sslRequired": "none",
+  "sslRequired": "all",
   "registrationAllowed": false,
+  "eventsEnabled": true,
+  "eventsListeners": ["jboss-logging"],
   "clients": [
     {
       "clientId": "himmelcloak-test-client",

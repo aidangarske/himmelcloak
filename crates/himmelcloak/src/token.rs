@@ -234,10 +234,28 @@ fn decode_json(part: &str) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+
     use serde_json::json;
 
-    use super::{audience_matches, endpoint, token_kid};
+    use super::{audience_matches, discover, endpoint, token_kid, verify_id_token};
+    use crate::error::Result;
+    use crate::transport::{HttpTransport, Request, Response};
     use url::Url;
+
+    struct RecordedTransport(Mutex<Option<Response>>);
+
+    impl HttpTransport for RecordedTransport {
+        fn send(
+            &self,
+            _request: Request,
+        ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+            let response = self.0.lock().unwrap().take().unwrap();
+            Box::pin(async move { Ok(response) })
+        }
+    }
 
     #[test]
     fn discovery_endpoint_must_keep_the_issuer_origin() {
@@ -250,6 +268,26 @@ mod tests {
         assert!(endpoint("https://elsewhere.example/token", &issuer).is_err());
         assert!(endpoint("http://login.example/token", &issuer).is_err());
         assert!(endpoint("https://login.example/token#fragment", &issuer).is_err());
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_cross_origin_jwks() {
+        let issuer = Url::parse("https://login.example/realms/test").unwrap();
+        let document = json!({
+            "issuer": issuer.as_str(),
+            "authorization_endpoint": "https://login.example/realms/test/auth",
+            "token_endpoint": "https://login.example/realms/test/token",
+            "jwks_uri": "https://attacker.example/keys",
+            "userinfo_endpoint": "https://login.example/realms/test/userinfo",
+            "revocation_endpoint": "https://login.example/realms/test/revoke"
+        });
+        let transport = RecordedTransport(Mutex::new(Some(Response {
+            status: 200,
+            headers: Vec::new(),
+            body: serde_json::to_vec(&document).unwrap(),
+            cookies: Vec::new(),
+        })));
+        assert!(discover(&transport, &issuer).await.is_err());
     }
 
     #[test]
@@ -270,5 +308,73 @@ mod tests {
     fn rejects_malformed_jwt_before_key_lookup() {
         assert!(token_kid("only.two").is_err());
         assert!(token_kid(".claims.signature").is_err());
+    }
+
+    #[test]
+    fn verifies_rs256_signature_and_rejects_tampering() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/rs256_id_token.json")).unwrap();
+        let token = fixture["token"].as_str().unwrap();
+        let jwks = &fixture["jwk"];
+        let verify = |value: &str| {
+            verify_id_token(
+                value,
+                jwks,
+                "https://example.test/realms/test",
+                "client",
+                None,
+            )
+        };
+        assert_eq!(verify(token).unwrap()["sub"], "alice");
+
+        let mut tampered = token.as_bytes().to_vec();
+        let signature_start = tampered.iter().rposition(|byte| *byte == b'.').unwrap() + 1;
+        tampered[signature_start] = if tampered[signature_start] == b'A' {
+            b'B'
+        } else {
+            b'A'
+        };
+        assert!(verify(std::str::from_utf8(&tampered).unwrap()).is_err());
+
+        let mut unknown_key = jwks.clone();
+        unknown_key["keys"][0]["kid"] = json!("other");
+        assert!(verify_id_token(
+            token,
+            &unknown_key,
+            "https://example.test/realms/test",
+            "client",
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn verifies_es256_signature_and_rejects_wrong_curve() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/es256_id_token.json")).unwrap();
+        let token = fixture["token"].as_str().unwrap();
+        let jwks = &fixture["jwk"];
+        assert_eq!(
+            verify_id_token(
+                token,
+                jwks,
+                "https://example.test/realms/test",
+                "client",
+                None,
+            )
+            .unwrap()["sub"],
+            "alice"
+        );
+
+        let mut wrong_curve = jwks.clone();
+        wrong_curve["keys"][0]["crv"] = json!("P-384");
+        assert!(verify_id_token(
+            token,
+            &wrong_curve,
+            "https://example.test/realms/test",
+            "client",
+            None,
+        )
+        .is_err());
     }
 }

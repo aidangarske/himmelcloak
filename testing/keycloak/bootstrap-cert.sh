@@ -3,6 +3,7 @@ set -euo pipefail
 
 CERT_DIR=$(cd "$(dirname "$0")" && pwd)/.generated
 mkdir -p "$CERT_DIR"
+chmod 700 "$CERT_DIR"
 if [[ -f "$CERT_DIR/ca.pem" && -f "$CERT_DIR/server.crt" && -f "$CERT_DIR/server.key" ]] &&
    openssl x509 -in "$CERT_DIR/ca.pem" -noout -checkend 3600 >/dev/null 2>&1 &&
    openssl x509 -in "$CERT_DIR/server.crt" -noout -checkend 3600 >/dev/null 2>&1 &&
@@ -25,4 +26,7 @@ EOF
 openssl x509 -req -in "$CERT_DIR/server.csr" \
     -CA "$CERT_DIR/ca.pem" -CAkey "$CERT_DIR/ca.key" -CAcreateserial \
     -days 2 -out "$CERT_DIR/server.crt" -extfile "$CERT_DIR/server.ext" >/dev/null 2>&1
+# The non-root Keycloak container must read this disposable mounted key.
+# The generated directory is private to the host user.
 chmod 644 "$CERT_DIR/server.key"
+chmod 600 "$CERT_DIR/ca.key"

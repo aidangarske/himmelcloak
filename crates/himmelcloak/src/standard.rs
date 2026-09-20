@@ -35,7 +35,7 @@ pub(crate) async fn acquire(
 ) -> Result<Tokens> {
     let response = transport.send(Request::form(endpoint, fields)).await?;
     if matches!(response.status, 400 | 401 | 403) {
-        return Err(Error::AuthenticationRejected);
+        return Err(grant_error(response.status, &response.body));
     }
     if response.status != 200 {
         return Err(Error::HttpStatus(response.status));
@@ -53,6 +53,25 @@ pub(crate) async fn acquire(
         refresh_token: std::mem::take(&mut parsed.refresh_token),
         id_token: std::mem::take(&mut parsed.id_token),
     })
+}
+
+fn grant_error(status: u32, body: &[u8]) -> Error {
+    let code = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    match code.as_deref() {
+        Some("invalid_grant" | "access_denied") => Error::AuthenticationRejected,
+        Some(
+            "invalid_client" | "unauthorized_client" | "unsupported_grant_type" | "invalid_request",
+        ) => Error::InvalidConfiguration("Keycloak rejected the client or requested grant"),
+        _ if matches!(status, 401 | 403) => Error::AuthenticationRejected,
+        _ => Error::HttpStatus(status),
+    }
 }
 
 pub(crate) async fn revoke(
@@ -91,4 +110,22 @@ pub(crate) async fn userinfo(
         return Err(Error::HttpStatus(response.status));
     }
     serde_json::from_slice(&response.body).map_err(|_| Error::Protocol("invalid userinfo response"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grant_error;
+    use crate::error::Error;
+
+    #[test]
+    fn distinguishes_bad_credentials_from_disabled_direct_grant() {
+        assert_eq!(
+            grant_error(400, br#"{"error":"invalid_grant"}"#),
+            Error::AuthenticationRejected
+        );
+        assert!(matches!(
+            grant_error(400, br#"{"error":"unauthorized_client"}"#),
+            Error::InvalidConfiguration(_)
+        ));
+    }
 }

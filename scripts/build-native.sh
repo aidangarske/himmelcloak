@@ -11,7 +11,10 @@ if [[ -f "$NATIVE_PREFIX/lib/pkgconfig/libcurl.pc" && -f "$NATIVE_PREFIX/lib/pkg
         echo "Using native dependencies in $NATIVE_PREFIX"
         exit 0
     fi
-    echo "Native prefix has different refs; choose a new NATIVE_PREFIX" >&2
+    printf -v escaped_prefix '%q' "$NATIVE_PREFIX"
+    echo "Native prefix is incomplete or uses different refs." >&2
+    echo "Remove it with: rm -rf -- $escaped_prefix" >&2
+    echo "Or choose a new NATIVE_PREFIX." >&2
     exit 1
 fi
 

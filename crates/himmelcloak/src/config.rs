@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use url::Url;
+use url::{Host, Url};
 
 use crate::error::{Error, Result};
 
@@ -39,12 +39,13 @@ impl Config {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.server_url.scheme() != "https"
-            && !(self.server_url.scheme() == "http"
-                && matches!(
-                    self.server_url.host_str(),
-                    Some("localhost" | "127.0.0.1" | "::1")
-                ))
+        let loopback = match self.server_url.host() {
+            Some(Host::Domain("localhost")) => true,
+            Some(Host::Ipv4(address)) => address.is_loopback(),
+            Some(Host::Ipv6(address)) => address.is_loopback(),
+            _ => false,
+        };
+        if self.server_url.scheme() != "https" && !(self.server_url.scheme() == "http" && loopback)
         {
             return Err(Error::InvalidConfiguration(
                 "Keycloak requires HTTPS outside loopback",
@@ -94,5 +95,11 @@ mod tests {
         let mut config = Config::new("https://keycloak.example", "test", "client").unwrap();
         config.server_url = Url::parse("http://remote.example").unwrap();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn allows_ipv6_loopback_but_rejects_remote_http() {
+        assert!(Config::new("http://[::1]:8443", "test", "client").is_ok());
+        assert!(Config::new("http://[2001:db8::1]:8443", "test", "client").is_err());
     }
 }

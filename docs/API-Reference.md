@@ -22,6 +22,10 @@ libcurl to report wolfSSL as its TLS backend.
 | `revoke_token(token)` | Revoke an access or refresh token |
 | `userinfo(&tokens)` | Fetch claims and compare the subject to the verified ID token |
 
+For a direct grant, `AuthenticationRejected` indicates rejected credentials or
+access, while `InvalidConfiguration` reports a Keycloak client or grant setting
+that needs operator attention.
+
 The public `AuthFlow`, `AuthStep`, `Challenge`, and `Answer` types reserve the resumable native
 flow API. `initiate_auth_flow` and `continue_auth_flow` are still under construction and currently
 return `NotImplemented`.

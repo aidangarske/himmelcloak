@@ -8,6 +8,11 @@ Docker network alias.
 Run `make test-live` for the moving `latest` Keycloak image or set `KEYCLOAK_IMAGE` to another tag.
 Run `make oracle-down` afterward to remove the test server and its state.
 
+Run `testing/keycloak/run.sh --verbose` (or `make test-live-verbose`) to see
+Himmelcloak's client steps and Keycloak's `LOGIN`/`LOGIN_ERROR` event lines.
+The trace reports outcomes and subjects but never prints passwords or tokens.
+CI enables the same client trace and server event output for each live run.
+
 The live test requires `KEYCLOAK_URL` and `KEYCLOAK_CA`; the Compose tester sets both. CI runs
 the same test against the latest stable release tag and the `nightly` development image on every
 push and PR. CI resolves both image digests before starting the matrix, so a run records exactly

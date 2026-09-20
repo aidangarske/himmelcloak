@@ -9,6 +9,7 @@ services:
       KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/certs/server.crt
       KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/certs/server.key
       KC_HTTP_ENABLED: "false"
+      KC_SPI_EVENTS_LISTENER__JBOSS_LOGGING__SUCCESS_LEVEL: info
     ports:
       - "127.0.0.1:8443:8443"
     volumes:

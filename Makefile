@@ -1,4 +1,4 @@
-.PHONY: native build all-features test lint fmt oracle-up oracle-down test-live docker-lint
+.PHONY: native build all-features test lint fmt oracle-up oracle-down test-live test-live-verbose docker-lint
 
 COMPOSE = docker compose -f testing/keycloak/docker-compose.yml
 
@@ -28,9 +28,11 @@ oracle-up:
 oracle-down:
 	$(COMPOSE) down -v
 
-test-live: oracle-up
-	$(COMPOSE) build tester
-	$(COMPOSE) run --rm tester
+test-live:
+	testing/keycloak/run.sh
+
+test-live-verbose:
+	testing/keycloak/run.sh --verbose
 
 docker-lint:
 	$(COMPOSE) build tester
