@@ -60,7 +60,11 @@ impl Config {
                 "server URL must not have credentials, query, or fragment",
             ));
         }
-        if self.realm.is_empty() || self.realm.contains('/') || self.client_id.is_empty() {
+        if self.realm.is_empty()
+            || self.realm.contains('/')
+            || matches!(self.realm.as_str(), "." | "..")
+            || self.client_id.is_empty()
+        {
             return Err(Error::InvalidConfiguration("realm or client ID"));
         }
         if self.timeout.is_zero() {
@@ -101,5 +105,12 @@ mod tests {
     fn allows_ipv6_loopback_but_rejects_remote_http() {
         assert!(Config::new("http://[::1]:8443", "test", "client").is_ok());
         assert!(Config::new("http://[2001:db8::1]:8443", "test", "client").is_err());
+    }
+
+    #[test]
+    fn rejects_dot_segment_realms() {
+        for realm in [".", ".."] {
+            assert!(Config::new("https://keycloak.example", realm, "client").is_err());
+        }
     }
 }

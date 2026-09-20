@@ -19,7 +19,7 @@ without one.
 
 | Method | Behavior |
 | --- | --- |
-| `acquire_token_by_password(user, password, totp)` | Direct Access Grant, when enabled on the Keycloak client |
+| `acquire_token_by_password(user, password, totp)` | Direct Access Grant when enabled on the Keycloak client and by Cargo features |
 | `refresh_tokens(&tokens)` | Refresh a verified session; keep its subject when Keycloak omits a new ID token |
 | `revoke_token(token)` | Revoke an access or refresh token |
 | `userinfo(&tokens)` | Fetch claims and compare the subject to the verified session |

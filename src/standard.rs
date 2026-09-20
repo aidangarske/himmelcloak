@@ -5,7 +5,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::flow::Tokens;
@@ -13,18 +13,10 @@ use crate::transport::{HttpTransport, Request};
 
 #[derive(Deserialize)]
 struct TokenResponse {
-    access_token: String,
-    refresh_token: Option<String>,
-    id_token: Option<String>,
+    access_token: Zeroizing<String>,
+    refresh_token: Option<Zeroizing<String>>,
+    id_token: Option<Zeroizing<String>>,
     token_type: String,
-}
-
-impl Drop for TokenResponse {
-    fn drop(&mut self) {
-        self.access_token.zeroize();
-        self.refresh_token.zeroize();
-        self.id_token.zeroize();
-    }
 }
 
 pub(crate) async fn acquire(
@@ -33,7 +25,7 @@ pub(crate) async fn acquire(
     fields: &[(&str, &str)],
     require_id_token: bool,
 ) -> Result<Tokens> {
-    let response = transport.send(Request::form(endpoint, fields)).await?;
+    let response = transport.send(Request::form(endpoint, fields)?).await?;
     if matches!(response.status, 400 | 401 | 403) {
         return Err(grant_error(response.status, &response.body));
     }
@@ -49,9 +41,15 @@ pub(crate) async fn acquire(
         return Err(Error::Protocol("token response has no ID token"));
     }
     Ok(Tokens {
-        access_token: std::mem::take(&mut parsed.access_token),
-        refresh_token: std::mem::take(&mut parsed.refresh_token),
-        id_token: std::mem::take(&mut parsed.id_token),
+        access_token: std::mem::take(&mut *parsed.access_token),
+        refresh_token: parsed
+            .refresh_token
+            .as_mut()
+            .map(|token| std::mem::take(&mut **token)),
+        id_token: parsed
+            .id_token
+            .as_mut()
+            .map(|token| std::mem::take(&mut **token)),
         verified_subject: None,
     })
 }
@@ -85,7 +83,7 @@ pub(crate) async fn revoke(
         .send(Request::form(
             endpoint,
             &[("client_id", client_id), ("token", token)],
-        ))
+        )?)
         .await?;
     if matches!(response.status, 200 | 204) {
         Ok(())

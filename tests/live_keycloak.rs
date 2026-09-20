@@ -25,6 +25,10 @@ fn config() -> Config {
 
 #[tokio::test]
 #[ignore = "requires a live Keycloak server and test CA"]
+#[cfg(all(
+    feature = "password",
+    not(any(feature = "passwordless", feature = "gov"))
+))]
 async fn direct_grant_lifecycle() {
     trace("discover Keycloak OIDC metadata and signing keys over HTTPS");
     let app = PublicClientApplication::with_config(config())

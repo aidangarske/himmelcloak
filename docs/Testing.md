@@ -6,6 +6,7 @@ user. A generated test CA signs the HTTPS certificate for the `keycloak.test`
 Docker network alias.
 
 Run `make test-live` for the moving `latest` Keycloak image or set `KEYCLOAK_IMAGE` to another tag.
+Each local run recreates the Keycloak container so realm import uses the current fixture.
 Run `make oracle-down` afterward to remove the test server and its state.
 
 Run `tests/keycloak/run.sh --verbose` (or `make test-live-verbose`) to see
@@ -26,5 +27,5 @@ Each new login factor must add a live scenario before its feature is treated as
 complete.
 
 The exact Cargo versions remain in `Cargo.lock` for reproducible builds.
-Dependabot opens weekly Cargo and GitHub Actions update PRs into `core`, while
-the resolver workflows expose new native and Keycloak releases immediately.
+Dependabot checks Cargo and GitHub Actions updates weekly, while the resolver
+workflows expose new native and Keycloak releases immediately.

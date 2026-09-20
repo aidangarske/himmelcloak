@@ -16,7 +16,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 compose=(docker compose -f "$script_dir/docker-compose.yml")
 
 "$script_dir/bootstrap-cert.sh"
-"${compose[@]}" up -d keycloak
+"${compose[@]}" up -d --pull always --force-recreate keycloak
 "${compose[@]}" build tester
 
 if [[ "$verbose" == 0 ]]; then

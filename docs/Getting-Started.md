@@ -5,7 +5,8 @@ refresh, revocation, and userinfo. The native flow driver and additional factors
 
 ## Run the real Keycloak suite
 
-Docker with the Compose v2 plugin is the simplest supported development environment:
+Docker with the Compose v2 plugin and the OpenSSL command-line tool is the
+simplest supported development environment:
 
 ```sh
 make test-live

@@ -43,7 +43,8 @@ planned native login flow.
 
 ## Quick start
 
-Docker with Compose v2 provides the reproducible build and a real Keycloak login test:
+Docker with Compose v2 and the OpenSSL command-line tool provide the
+reproducible build and a real Keycloak login test:
 
 ```sh
 git clone https://github.com/aidangarske/himmelcloak.git

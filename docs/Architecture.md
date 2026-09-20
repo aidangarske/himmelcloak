@@ -57,9 +57,11 @@ independence is a design goal, not a current guarantee.
 | Required actions | Native flow | Planned |
 | Device authorization | OIDC device endpoint | Planned |
 
-Feature flags for the later methods reserve the original additive feature
-graph. They do not yet imply that the method works. The default flags are
-`password` and `totp`.
+Feature flags for later methods reserve the additive feature graph. They do
+not yet imply that those methods work. The default flags are `password` and
+`totp`: disabling `password` disables the direct grant, and disabling `totp`
+rejects its OTP parameter. The `gov` and `passwordless` bundles disable the
+direct grant even if default features are also selected.
 
 ## Crypto and hardware boundaries
 

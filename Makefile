@@ -23,7 +23,7 @@ fmt:
 
 oracle-up:
 	tests/keycloak/bootstrap-cert.sh
-	$(COMPOSE) up -d keycloak
+	$(COMPOSE) up -d --pull always --force-recreate keycloak
 
 oracle-down:
 	$(COMPOSE) down -v

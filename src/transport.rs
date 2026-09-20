@@ -15,6 +15,7 @@ use crate::error::{Error, Result};
 
 const MAX_RESPONSE: usize = 1024 * 1024;
 const MAX_HEADERS: usize = 64 * 1024;
+const MAX_FORM: usize = 1024 * 1024;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Method {
@@ -41,18 +42,31 @@ impl Request {
         }
     }
 
-    pub fn form(url: Url, fields: &[(&str, &str)]) -> Self {
-        let body = url::form_urlencoded::Serializer::new(String::new())
+    pub fn form(url: Url, fields: &[(&str, &str)]) -> Result<Self> {
+        // Each input byte can expand to three percent-encoded bytes. Reserve
+        // the full upper bound before any secret is copied into the body.
+        let capacity = fields
+            .iter()
+            .try_fold(0usize, |size, (name, value)| {
+                name.len()
+                    .checked_add(value.len())?
+                    .checked_mul(3)?
+                    .checked_add(2)?
+                    .checked_add(size)
+            })
+            .filter(|size| *size <= MAX_FORM)
+            .ok_or(Error::Protocol("form request too large"))?;
+        let body = url::form_urlencoded::Serializer::new(String::with_capacity(capacity))
             .extend_pairs(fields.iter().copied())
             .finish()
             .into_bytes();
-        Self {
+        Ok(Self {
             method: Method::Post,
             url,
             headers: vec!["Content-Type: application/x-www-form-urlencoded".to_owned()],
             body,
             cookies: Vec::new(),
-        }
+        })
     }
 }
 

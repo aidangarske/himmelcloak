@@ -15,9 +15,10 @@ todo = "deny"
 unimplemented = "deny"
 
 [features]
-# Reserve the planned additive feature names. The current OIDC core, password
-# grant, wolfCrypt, and wolfSSL-backed transport are built in every profile;
-# these flags do not yet compile out code.
+# Reserve the planned additive feature names. The OIDC core, wolfCrypt, and
+# wolfSSL-backed transport are built in every profile. The password grant
+# requires `password`; `totp` controls its optional OTP field. The `gov` and
+# `passwordless` bundles disable the password grant even with default features.
 default = ["password", "totp"]
 
 # --- planned auth methods ---
@@ -65,4 +66,4 @@ signature = "2.2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 url = "2"
 wolfssl-wolfcrypt = { version = "=2.2.0", features = ["signature"] }
-zeroize = { version = "1", features = ["zeroize_derive"] }
+zeroize = { version = "1", features = ["zeroize_derive", "serde"] }

@@ -214,8 +214,10 @@ fn audience_matches(claims: &Value, client_id: &str) -> bool {
     match claims.get("aud") {
         Some(Value::String(aud)) => aud == client_id,
         Some(Value::Array(aud)) => {
+            let valid = aud.iter().all(Value::is_string);
             let contains = aud.iter().any(|item| item.as_str() == Some(client_id));
-            contains
+            valid
+                && contains
                 && (aud.len() == 1 || claims.get("azp").and_then(Value::as_str) == Some(client_id))
         }
         _ => false,
@@ -309,6 +311,10 @@ mod tests {
         assert!(!audience_matches(&claims, "himmelcloak"));
         let claims = json!({"aud": ["himmelcloak", "other"], "azp": "himmelcloak"});
         assert!(audience_matches(&claims, "himmelcloak"));
+        let claims = json!({"aud": ["himmelcloak", 7], "azp": "himmelcloak"});
+        assert!(!audience_matches(&claims, "himmelcloak"));
+        let claims = json!({"aud": ["himmelcloak", null], "azp": "himmelcloak"});
+        assert!(!audience_matches(&claims, "himmelcloak"));
         let claims = json!({"aud": "himmelcloak", "azp": "other"});
         assert!(!audience_matches(&claims, "himmelcloak"));
         let claims = json!({"aud": "himmelcloak", "azp": "himmelcloak"});

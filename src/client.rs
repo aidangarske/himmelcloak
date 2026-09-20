@@ -57,6 +57,12 @@ impl PublicClientApplication {
         password: &str,
         totp: Option<&str>,
     ) -> Result<Tokens> {
+        if !cfg!(feature = "password") || cfg!(any(feature = "passwordless", feature = "gov")) {
+            return Err(Error::UnsupportedFactor);
+        }
+        if totp.is_some() && !cfg!(feature = "totp") {
+            return Err(Error::UnsupportedFactor);
+        }
         let mut fields = vec![
             ("grant_type", "password"),
             ("client_id", self.config.client_id.as_str()),
@@ -105,6 +111,15 @@ impl PublicClientApplication {
             if claims.get("sub").and_then(Value::as_str) != Some(subject) {
                 return Err(Error::TokenValidation("refreshed subject mismatch"));
             }
+        }
+        let user = standard::userinfo(
+            self.transport.as_ref(),
+            self.metadata.userinfo_endpoint.clone(),
+            &tokens.access_token,
+        )
+        .await?;
+        if user.get("sub").and_then(Value::as_str) != Some(subject) {
+            return Err(Error::TokenValidation("refreshed subject mismatch"));
         }
         if tokens.refresh_token.is_none() {
             tokens.refresh_token = Some(refresh_token.to_owned());
@@ -259,6 +274,10 @@ mod tests {
         }
     }
 
+    #[cfg(all(
+        feature = "password",
+        not(any(feature = "passwordless", feature = "gov"))
+    ))]
     #[tokio::test]
     async fn refresh_without_id_token_preserves_verified_userinfo_subject() {
         let fixture: Value =
@@ -273,6 +292,7 @@ mod tests {
                     "token_type": "Bearer"
                 })),
                 response(json!({"access_token":"new-access","token_type":"Bearer"})),
+                response(json!({"sub":"alice"})),
                 response(json!({"sub":"alice"})),
                 response(json!({"sub":"mallory"})),
             ],
@@ -290,6 +310,73 @@ mod tests {
             client.userinfo(&refreshed).await.err(),
             Some(Error::TokenValidation("userinfo subject mismatch"))
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_rejects_a_signed_id_token_for_another_subject() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/rs256_id_token.json")).unwrap();
+        let client = app(
+            fixture["jwk"].clone(),
+            vec![response(json!({
+                "access_token": "new-access",
+                "id_token": fixture["token"],
+                "token_type": "Bearer"
+            }))],
+        );
+        let previous = Tokens {
+            access_token: "previous-access".to_owned(),
+            refresh_token: Some("previous-refresh".to_owned()),
+            id_token: None,
+            verified_subject: Some("mallory".to_owned()),
+        };
+        assert_eq!(
+            client.refresh_tokens(&previous).await.err(),
+            Some(Error::TokenValidation("refreshed subject mismatch"))
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_rejects_a_swapped_refresh_token_without_an_id_token() {
+        let client = app(
+            serde_json::json!({}),
+            vec![
+                response(json!({"access_token":"bob-access","token_type":"Bearer"})),
+                response(json!({"sub":"bob"})),
+            ],
+        );
+        let previous = Tokens {
+            access_token: "alice-access".to_owned(),
+            refresh_token: Some("bob-refresh".to_owned()),
+            id_token: None,
+            verified_subject: Some("alice".to_owned()),
+        };
+        assert_eq!(
+            client.refresh_tokens(&previous).await.err(),
+            Some(Error::TokenValidation("refreshed subject mismatch"))
+        );
+    }
+
+    #[tokio::test]
+    async fn password_grant_respects_feature_selection() {
+        let client = app(serde_json::json!({}), vec![]);
+        if !cfg!(feature = "password") || cfg!(any(feature = "passwordless", feature = "gov")) {
+            assert_eq!(
+                client
+                    .acquire_token_by_password("alice", "password", None)
+                    .await
+                    .err(),
+                Some(Error::UnsupportedFactor)
+            );
+        } else if !cfg!(feature = "totp") {
+            assert_eq!(
+                client
+                    .acquire_token_by_password("alice", "password", Some("123456"))
+                    .await
+                    .err(),
+                Some(Error::UnsupportedFactor)
+            );
+        }
     }
 
     #[tokio::test]
