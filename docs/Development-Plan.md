@@ -1,10 +1,11 @@
 # Development Plan
 
-The `core` branch is the shared integration base. Its first PR targets `main`
-and establishes the library, native dependencies, and live Keycloak test gate.
-Later feature branches start from `core` and open PRs into `core`; no feature PR
-depends on another feature PR. A completed method includes its implementation,
-documentation, and a real Keycloak scenario in the same PR.
+Establish the shared library, native dependencies, and live Keycloak test gate
+first. That foundation can land as one larger, structured pull request. Create
+later features in focused branches from the repository's current integration
+target, with a separate pull request for each. Feature pull requests should be
+independent of one another. A completed method includes its implementation,
+documentation, and a real Keycloak scenario in the same pull request.
 
 ## Core ownership
 
@@ -63,7 +64,7 @@ at `ghcr.io/aidangarske/himmelcloak/tester`. Rebuild and publish it when the
 Dockerfile, native build script, Rust toolchain, or pinned wolfSSL/curl baseline
 changes. Record an immutable image digest for each publication.
 
-Once the image is published, the every-push core and Keycloak jobs should pull
+Once the image is published, the every-push foundation and Keycloak jobs should pull
 that digest and mount the current checkout into the container. They still
 compile and test the current Rust code on every push, including real logins
 against stable and nightly Keycloak, but no longer rebuild wolfSSL and curl
