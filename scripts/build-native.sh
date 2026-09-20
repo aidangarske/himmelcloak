@@ -5,7 +5,11 @@ WOLFSSL_REF=${WOLFSSL_REF:-v5.9.2-stable}
 CURL_REF=${CURL_REF:-curl-8_22_0}
 WOLFSSL_COMMIT=${WOLFSSL_COMMIT:-}
 CURL_COMMIT=${CURL_COMMIT:-}
-NATIVE_PREFIX=${NATIVE_PREFIX:-"$(pwd)/.native"}
+REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+NATIVE_PREFIX=${NATIVE_PREFIX:-"$REPO_ROOT/.native"}
+if [[ "$NATIVE_PREFIX" != /* ]]; then
+    NATIVE_PREFIX="$(pwd)/$NATIVE_PREFIX"
+fi
 
 resolve_commit() {
     local remote=$1 ref=$2 matches commit
@@ -48,7 +52,8 @@ REFS="wolfssl $WOLFSSL_REF $WOLFSSL_COMMIT
 curl $CURL_REF $CURL_COMMIT"
 
 if [[ -f "$NATIVE_PREFIX/lib/pkgconfig/libcurl.pc" && -f "$NATIVE_PREFIX/lib/pkgconfig/wolfssl.pc" ]]; then
-    if [[ -f "$NATIVE_PREFIX/.himmelcloak-refs" ]] &&
+    if [[ -f "$NATIVE_PREFIX/lib/libcurl.a" && -f "$NATIVE_PREFIX/lib/libwolfssl.a" &&
+          -f "$NATIVE_PREFIX/.himmelcloak-refs" ]] &&
        [[ "$(cat "$NATIVE_PREFIX/.himmelcloak-refs")" == "$REFS" ]]; then
         echo "Using native dependencies in $NATIVE_PREFIX"
         exit 0
@@ -76,7 +81,7 @@ fetch_commit() {
 fetch_commit https://github.com/wolfSSL/wolfssl.git "$WOLFSSL_COMMIT" "$BUILD_DIR/wolfssl"
 pushd "$BUILD_DIR/wolfssl" >/dev/null
 ./autogen.sh
-./configure --prefix="$NATIVE_PREFIX" --enable-all --disable-static
+./configure --prefix="$NATIVE_PREFIX" --enable-all --enable-static --disable-shared
 make -j"$(nproc)"
 make install
 popd >/dev/null
@@ -88,7 +93,8 @@ PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig" ./configure \
     --prefix="$NATIVE_PREFIX" \
     --with-wolfssl="$NATIVE_PREFIX" \
     --without-libpsl \
-    --disable-static
+    --enable-static \
+    --disable-shared
 make -j"$(nproc)"
 make install
 popd >/dev/null

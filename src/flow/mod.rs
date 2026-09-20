@@ -71,6 +71,11 @@ pub struct Tokens {
     pub refresh_token: Option<String>,
     pub id_token: Option<String>,
     pub(crate) verified_subject: Option<String>,
+    pub(crate) verified_issuer: Option<String>,
+    pub(crate) verified_client_id: Option<String>,
+    // Private copy binds the caller-visible refresh token to its verified
+    // session. A caller cannot substitute another session's refresh token.
+    pub(crate) verified_refresh_token: Option<String>,
 }
 
 impl Drop for Tokens {
@@ -83,5 +88,8 @@ impl Drop for Tokens {
             token.zeroize();
         }
         self.verified_subject.zeroize();
+        self.verified_issuer.zeroize();
+        self.verified_client_id.zeroize();
+        self.verified_refresh_token.zeroize();
     }
 }

@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use url::{Host, Url};
+use url::Url;
 
 use crate::error::{Error, Result};
 
@@ -39,16 +39,9 @@ impl Config {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        let loopback = match self.server_url.host() {
-            Some(Host::Domain("localhost")) => true,
-            Some(Host::Ipv4(address)) => address.is_loopback(),
-            Some(Host::Ipv6(address)) => address.is_loopback(),
-            _ => false,
-        };
-        if self.server_url.scheme() != "https" && !(self.server_url.scheme() == "http" && loopback)
-        {
+        if self.server_url.scheme() != "https" {
             return Err(Error::InvalidConfiguration(
-                "Keycloak requires HTTPS outside loopback",
+                "Keycloak issuer requires HTTPS",
             ));
         }
         if self.server_url.query().is_some()
@@ -67,8 +60,10 @@ impl Config {
         {
             return Err(Error::InvalidConfiguration("realm or client ID"));
         }
-        if self.timeout.is_zero() {
-            return Err(Error::InvalidConfiguration("timeout must be positive"));
+        if self.timeout < Duration::from_millis(1) {
+            return Err(Error::InvalidConfiguration(
+                "timeout must be at least one millisecond",
+            ));
         }
         Ok(())
     }
@@ -102,9 +97,15 @@ mod tests {
     }
 
     #[test]
-    fn allows_ipv6_loopback_but_rejects_remote_http() {
-        assert!(Config::new("http://[::1]:8443", "test", "client").is_ok());
-        assert!(Config::new("http://[2001:db8::1]:8443", "test", "client").is_err());
+    fn requires_https_even_for_loopback_issuer() {
+        assert!(Config::new("https://[::1]:8443", "test", "client").is_ok());
+        for url in [
+            "http://127.0.0.1:8443",
+            "http://[::1]:8443",
+            "http://keycloak.example",
+        ] {
+            assert!(Config::new(url, "test", "client").is_err());
+        }
     }
 
     #[test]
@@ -112,5 +113,20 @@ mod tests {
         for realm in [".", ".."] {
             assert!(Config::new("https://keycloak.example", realm, "client").is_err());
         }
+    }
+
+    #[test]
+    fn rejects_timeouts_below_libcurl_resolution() {
+        for timeout in [
+            std::time::Duration::ZERO,
+            std::time::Duration::from_micros(500),
+        ] {
+            let mut config = Config::new("https://keycloak.example", "test", "client").unwrap();
+            config.timeout = timeout;
+            assert!(config.validate().is_err());
+        }
+        let mut config = Config::new("https://keycloak.example", "test", "client").unwrap();
+        config.timeout = std::time::Duration::from_millis(1);
+        assert!(config.validate().is_ok());
     }
 }

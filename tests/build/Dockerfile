@@ -20,6 +20,7 @@ RUN rustup component add --toolchain 1.95.0 clippy rustfmt
 
 ENV WOLFSSL_PREFIX=/opt/himmelcloak-native
 ENV PKG_CONFIG_PATH=/opt/himmelcloak-native/lib/pkgconfig
+ENV PKG_CONFIG_ALL_STATIC=1
 ENV LD_LIBRARY_PATH=/opt/himmelcloak-native/lib
 ENV PATH=/opt/himmelcloak-native/bin:${PATH}
 WORKDIR /work

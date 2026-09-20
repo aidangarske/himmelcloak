@@ -2,22 +2,13 @@
  * Himmelcloak native Keycloak authentication
  * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
  */
-use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
-use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::flow::Tokens;
+use crate::sensitive_json::{parse as parse_sensitive_json, SensitiveClaims};
 use crate::transport::{HttpTransport, Request};
-
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: Zeroizing<String>,
-    refresh_token: Option<Zeroizing<String>>,
-    id_token: Option<Zeroizing<String>>,
-    token_type: String,
-}
 
 pub(crate) async fn acquire(
     transport: &dyn HttpTransport,
@@ -32,37 +23,47 @@ pub(crate) async fn acquire(
     if response.status != 200 {
         return Err(Error::HttpStatus(response.status));
     }
-    let mut parsed: TokenResponse = serde_json::from_slice(&response.body)
-        .map_err(|_| Error::Protocol("invalid token response"))?;
-    if !parsed.token_type.eq_ignore_ascii_case("bearer") || parsed.access_token.is_empty() {
+    let parsed =
+        parse_sensitive_json(&response.body).ok_or(Error::Protocol("invalid token response"))?;
+    let access_token = parsed
+        .get("access_token")
+        .and_then(Value::as_str)
+        .ok_or(Error::Protocol("invalid token response"))?;
+    let token_type = parsed
+        .get("token_type")
+        .and_then(Value::as_str)
+        .ok_or(Error::Protocol("invalid token response"))?;
+    let optional_token = |name| match parsed.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.as_str())),
+        _ => Err(Error::Protocol("invalid token response")),
+    };
+    let refresh_token = optional_token("refresh_token")?;
+    let id_token = optional_token("id_token")?;
+    if !token_type.eq_ignore_ascii_case("bearer") || access_token.is_empty() {
         return Err(Error::Protocol("unexpected token type"));
     }
-    if require_id_token && parsed.id_token.is_none() {
+    if require_id_token && id_token.is_none() {
         return Err(Error::Protocol("token response has no ID token"));
     }
     Ok(Tokens {
-        access_token: std::mem::take(&mut *parsed.access_token),
-        refresh_token: parsed
-            .refresh_token
-            .as_mut()
-            .map(|token| std::mem::take(&mut **token)),
-        id_token: parsed
-            .id_token
-            .as_mut()
-            .map(|token| std::mem::take(&mut **token)),
+        access_token: access_token.to_owned(),
+        refresh_token: refresh_token.map(str::to_owned),
+        id_token: id_token.map(str::to_owned),
         verified_subject: None,
+        verified_issuer: None,
+        verified_client_id: None,
+        verified_refresh_token: None,
     })
 }
 
 fn grant_error(status: u32, body: &[u8]) -> Error {
-    let code = serde_json::from_slice::<Value>(body)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
+    let code = parse_sensitive_json(body).and_then(|value| {
+        value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
     match code.as_deref() {
         Some("invalid_grant" | "access_denied") => Error::AuthenticationRejected,
         Some(
@@ -96,7 +97,7 @@ pub(crate) async fn userinfo(
     transport: &dyn HttpTransport,
     endpoint: Url,
     access_token: &str,
-) -> Result<Value> {
+) -> Result<SensitiveClaims> {
     let mut request = Request::get(endpoint);
     request
         .headers
@@ -108,7 +109,7 @@ pub(crate) async fn userinfo(
     if response.status != 200 {
         return Err(Error::HttpStatus(response.status));
     }
-    serde_json::from_slice(&response.body).map_err(|_| Error::Protocol("invalid userinfo response"))
+    parse_sensitive_json(&response.body).ok_or(Error::Protocol("invalid userinfo response"))
 }
 
 #[cfg(test)]

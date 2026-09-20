@@ -9,9 +9,11 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
+use zeroize::Zeroizing;
 
 use crate::crypto;
 use crate::error::{Error, Result};
+use crate::sensitive_json::{parse as parse_sensitive_json, SensitiveClaims};
 use crate::transport::{HttpTransport, Request};
 
 #[derive(Clone)]
@@ -64,7 +66,7 @@ pub(crate) async fn discover(
 
 fn endpoint(raw: &str, issuer: &Url) -> Result<Url> {
     let url = Url::parse(raw).map_err(|_| Error::Protocol("invalid OIDC endpoint"))?;
-    if url.origin() != issuer.origin() || url.fragment().is_some() {
+    if url.scheme() != "https" || url.origin() != issuer.origin() || url.fragment().is_some() {
         return Err(Error::Protocol("OIDC endpoint origin mismatch"));
     }
     Ok(url)
@@ -87,23 +89,52 @@ pub(crate) async fn fetch_jwks(transport: &dyn HttpTransport, url: Url) -> Resul
     Ok(jwks)
 }
 
-pub(crate) fn token_kid(token: &str) -> Result<String> {
+pub(crate) fn token_key_info(token: &str) -> Result<(String, String)> {
     let (header, _, _) = split_token(token)?;
-    let header: Value = decode_json(header)?;
-    header
+    let header = decode_json(header)?;
+    let kid = header
         .get("kid")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .ok_or(Error::TokenValidation("token has no key ID"))
+        .ok_or(Error::TokenValidation("token has no key ID"))?;
+    let algorithm = header
+        .get("alg")
+        .and_then(Value::as_str)
+        .ok_or(Error::TokenValidation("missing algorithm"))?;
+    if !matches!(algorithm, "RS256" | "ES256") {
+        return Err(Error::TokenValidation("unsupported signing algorithm"));
+    }
+    Ok((kid, algorithm.to_owned()))
 }
 
-pub(crate) fn jwks_has_kid(jwks: &Value, kid: &str) -> bool {
+fn key_eligible(key: &Value, kid: &str, algorithm: &str) -> bool {
+    let string_field_matches = |name: &str, expected: &str| {
+        key.get(name).is_none() || key.get(name).and_then(Value::as_str) == Some(expected)
+    };
+    let type_matches = match algorithm {
+        "RS256" => key.get("kty").and_then(Value::as_str) == Some("RSA"),
+        "ES256" => {
+            key.get("kty").and_then(Value::as_str) == Some("EC")
+                && key.get("crv").and_then(Value::as_str) == Some("P-256")
+        }
+        _ => false,
+    };
+    key.get("kid").and_then(Value::as_str) == Some(kid)
+        && string_field_matches("use", "sig")
+        && string_field_matches("alg", algorithm)
+        && key.get("key_ops").is_none_or(|ops| {
+            ops.as_array().is_some_and(|ops| {
+                ops.iter().any(|op| op.as_str() == Some("verify"))
+                    && ops.iter().all(Value::is_string)
+            })
+        })
+        && type_matches
+}
+
+pub(crate) fn jwks_has_eligible_key(jwks: &Value, kid: &str, algorithm: &str) -> bool {
     jwks.get("keys")
         .and_then(Value::as_array)
-        .is_some_and(|keys| {
-            keys.iter()
-                .any(|key| key.get("kid").and_then(Value::as_str) == Some(kid))
-        })
+        .is_some_and(|keys| keys.iter().any(|key| key_eligible(key, kid, algorithm)))
 }
 
 pub(crate) fn verify_id_token(
@@ -112,14 +143,17 @@ pub(crate) fn verify_id_token(
     issuer: &str,
     client_id: &str,
     nonce: Option<&str>,
-) -> Result<Value> {
+) -> Result<SensitiveClaims> {
     let (header, claims, signature) = split_token(token)?;
-    let header_json: Value = decode_json(header)?;
-    let claims_json: Value = decode_json(claims)?;
+    let header_json = decode_json(header)?;
+    let claims_json = decode_json(claims)?;
     let algorithm = header_json
         .get("alg")
         .and_then(Value::as_str)
         .ok_or(Error::TokenValidation("missing algorithm"))?;
+    if !matches!(algorithm, "RS256" | "ES256") {
+        return Err(Error::TokenValidation("unsupported signing algorithm"));
+    }
     let kid = header_json
         .get("kid")
         .and_then(Value::as_str)
@@ -128,28 +162,38 @@ pub(crate) fn verify_id_token(
         .get("keys")
         .and_then(Value::as_array)
         .ok_or(Error::TokenValidation("invalid JWKS"))?;
-    let key = keys
-        .iter()
-        .find(|key| key.get("kid").and_then(Value::as_str) == Some(kid))
-        .ok_or(Error::TokenValidation("unknown key ID"))?;
-    if key
-        .get("use")
-        .and_then(Value::as_str)
-        .is_some_and(|use_| use_ != "sig")
-        || key
-            .get("alg")
-            .and_then(Value::as_str)
-            .is_some_and(|alg| alg != algorithm)
-    {
-        return Err(Error::TokenValidation("JWK not valid for token signature"));
-    }
-    let message = format!("{header}.{claims}");
+    let mut message = Zeroizing::new(Vec::with_capacity(header.len() + claims.len() + 1));
+    message.extend_from_slice(header.as_bytes());
+    message.push(b'.');
+    message.extend_from_slice(claims.as_bytes());
     let signature = URL_SAFE_NO_PAD
         .decode(signature)
         .map_err(|_| Error::TokenValidation("invalid signature encoding"))?;
-    crypto::verify(algorithm, key, message.as_bytes(), &signature)?;
-    validate_claims(&claims_json, issuer, client_id, nonce)?;
-    Ok(claims_json)
+    let mut eligible = false;
+    for key in keys.iter().filter(|key| key_eligible(key, kid, algorithm)) {
+        eligible = true;
+        match crypto::verify(algorithm, key, &message, &signature) {
+            Ok(()) => {
+                validate_claims(&claims_json, issuer, client_id, nonce)?;
+                return Ok(claims_json);
+            }
+            Err(Error::Crypto) => return Err(Error::Crypto),
+            Err(_) => {}
+        }
+    }
+    if !eligible {
+        return Err(
+            if keys
+                .iter()
+                .any(|key| key.get("kid").and_then(Value::as_str) == Some(kid))
+            {
+                Error::TokenValidation("JWK not valid for token signature")
+            } else {
+                Error::TokenValidation("unknown key ID")
+            },
+        );
+    }
+    Err(Error::TokenValidation("invalid signature"))
 }
 
 fn validate_claims(
@@ -236,11 +280,15 @@ fn split_token(token: &str) -> Result<(&str, &str, &str)> {
     }
 }
 
-fn decode_json(part: &str) -> Result<Value> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(part)
+fn decode_json(part: &str) -> Result<SensitiveClaims> {
+    // Keep the entire output slice live and zeroizing even when decoding fails
+    // after writing a valid prefix. Its length also covers the decoder's
+    // conservative estimate, so no plaintext can land in spare capacity.
+    let mut bytes = Zeroizing::new(vec![0u8; base64::decoded_len_estimate(part.len())]);
+    let decoded = URL_SAFE_NO_PAD
+        .decode_slice(part, &mut bytes[..])
         .map_err(|_| Error::TokenValidation("invalid JWT encoding"))?;
-    serde_json::from_slice(&bytes).map_err(|_| Error::TokenValidation("invalid JWT JSON"))
+    parse_sensitive_json(&bytes[..decoded]).ok_or(Error::TokenValidation("invalid JWT JSON"))
 }
 
 #[cfg(test)]
@@ -252,13 +300,36 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        audience_matches, discover, endpoint, token_kid, validate_claims, verify_id_token,
+        audience_matches, decode_json, discover, endpoint, jwks_has_eligible_key, token_key_info,
+        validate_claims, verify_id_token,
     };
     use crate::error::{Error, Result};
+    use crate::sensitive_json::clear_claims;
     use crate::transport::{HttpTransport, Request, Response};
     use url::Url;
 
     struct RecordedTransport(Mutex<Option<Response>>);
+
+    #[test]
+    fn clears_nested_identity_claims() {
+        let mut claims = json!(["alice", ["private-attribute"]]);
+        clear_claims(&mut claims);
+        assert_eq!(claims[0].as_str(), Some(""));
+        assert_eq!(claims[1][0].as_str(), Some(""));
+
+        let mut object = json!({"custom-claim": "private-value"});
+        clear_claims(&mut object);
+        assert!(object.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_late_invalid_base64_in_claims() {
+        let segment = format!("{}!", "QUJD".repeat(512));
+        assert_eq!(
+            decode_json(&segment).err(),
+            Some(Error::TokenValidation("invalid JWT encoding"))
+        );
+    }
 
     impl HttpTransport for RecordedTransport {
         fn send(
@@ -378,8 +449,31 @@ mod tests {
 
     #[test]
     fn rejects_malformed_jwt_before_key_lookup() {
-        assert!(token_kid("only.two").is_err());
-        assert!(token_kid(".claims.signature").is_err());
+        assert!(token_key_info("only.two").is_err());
+        assert!(token_key_info(".claims.signature").is_err());
+    }
+
+    #[test]
+    fn rs256_verification_fits_two_megabyte_thread_stack() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let fixture: serde_json::Value =
+                    serde_json::from_str(include_str!("../tests/fixtures/rs256_id_token.json"))
+                        .unwrap();
+                let claims = verify_id_token(
+                    fixture["token"].as_str().unwrap(),
+                    &fixture["jwk"],
+                    "https://example.test/realms/test",
+                    "client",
+                    None,
+                )
+                .unwrap();
+                assert_eq!(claims["sub"], "alice");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
@@ -418,6 +512,36 @@ mod tests {
             None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn verifies_key_by_algorithm_when_key_ids_repeat() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/rs256_id_token.json")).unwrap();
+        let token = fixture["token"].as_str().unwrap();
+        let valid = fixture["jwk"]["keys"][0].clone();
+        let mut incompatible = valid.clone();
+        incompatible["alg"] = json!("RS384");
+        let kid = valid["kid"].as_str().unwrap();
+        let incompatible_only = json!({"keys": [incompatible.clone()]});
+        assert!(!jwks_has_eligible_key(&incompatible_only, kid, "RS256"));
+        for jwks in [
+            json!({"keys": [incompatible.clone(), valid.clone()]}),
+            json!({"keys": [valid.clone(), incompatible.clone()]}),
+        ] {
+            assert!(jwks_has_eligible_key(&jwks, kid, "RS256"));
+            assert_eq!(
+                verify_id_token(
+                    token,
+                    &jwks,
+                    "https://example.test/realms/test",
+                    "client",
+                    None,
+                )
+                .unwrap()["sub"],
+                "alice"
+            );
+        }
     }
 
     #[test]

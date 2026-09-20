@@ -60,8 +60,9 @@ independence is a design goal, not a current guarantee.
 Feature flags for later methods reserve the additive feature graph. They do
 not yet imply that those methods work. The default flags are `password` and
 `totp`: disabling `password` disables the direct grant, and disabling `totp`
-rejects its OTP parameter. The `gov` and `passwordless` bundles disable the
-direct grant even if default features are also selected.
+rejects its OTP parameter. Cargo features are additive; use
+`--no-default-features --features gov` or
+`--no-default-features --features passwordless` to omit password support.
 
 ## Crypto and hardware boundaries
 
@@ -70,6 +71,10 @@ used by the core. The Rust `curl` crate drives libcurl, built with wolfSSL as
 its TLS backend. The native build pins wolfSSL v5.9.2-stable. Future optional
 modules can add wolfTPM, wolfHSM, wolfPKCS11, and wolfCOSE without coupling the
 baseline OIDC client to those devices.
+
+A shared limit allows up to 32 concurrent libcurl transfers per process.
+Cancelling a queued request releases its slot; a running libcurl transfer
+keeps its slot until it exits.
 
 Request bodies are streamed from zeroizing Rust buffers into libcurl. libcurl
 may still hold transient copies of sent bytes, and its HTTP header list copies

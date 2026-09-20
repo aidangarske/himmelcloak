@@ -29,4 +29,14 @@ jobs:
       - name: Clippy
         run: docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Unit tests
-        run: docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci cargo test --locked --lib
+        run: |
+          for features in default none password gov passwordless; do
+            case "$features" in
+              default) flags=() ;;
+              none) flags=(--no-default-features) ;;
+              *) flags=(--no-default-features --features "$features") ;;
+            esac
+            docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target \
+              -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci \
+              cargo test --locked --lib "${flags[@]}"
+          done

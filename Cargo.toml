@@ -4,6 +4,7 @@
 name = "himmelcloak"
 version = "0.0.0"
 edition = "2021"
+rust-version = "1.95"
 license = "LGPL-3.0-or-later OR GPL-3.0-or-later"
 authors = ["Aidan Garske <aidan@wolfssl.com>"]
 repository = "https://github.com/aidangarske/himmelcloak"
@@ -17,8 +18,8 @@ unimplemented = "deny"
 [features]
 # Reserve the planned additive feature names. The OIDC core, wolfCrypt, and
 # wolfSSL-backed transport are built in every profile. The password grant
-# requires `password`; `totp` controls its optional OTP field. The `gov` and
-# `passwordless` bundles disable the password grant even with default features.
+# requires `password`; `totp` controls its optional OTP field. Bundles are
+# additive; use --no-default-features for a gov or passwordless profile.
 default = ["password", "totp"]
 
 # --- planned auth methods ---
@@ -60,10 +61,11 @@ passwordless = ["webauthn","webauthn-usb","x509","recovery"]
 [dependencies]
 base64 = "0.22"
 curl = { version = "=0.4.50", default-features = false }
+curl-sys = { version = "=0.4.90", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 signature = "2.2"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 url = "2"
 wolfssl-wolfcrypt = { version = "=2.2.0", features = ["signature"] }
 zeroize = { version = "1", features = ["zeroize_derive", "serde"] }

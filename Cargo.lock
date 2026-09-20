@@ -156,6 +156,7 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "curl",
+ "curl-sys",
  "serde",
  "serde_json",
  "signature",

@@ -11,6 +11,7 @@ if [[ -f "$CERT_DIR/ca.pem" && -f "$CERT_DIR/server.crt" && -f "$CERT_DIR/server
    openssl verify -CAfile "$CERT_DIR/ca.pem" "$CERT_DIR/server.crt" >/dev/null 2>&1 &&
    cmp -s <(openssl x509 -in "$CERT_DIR/server.crt" -pubkey -noout) \
           <(openssl pkey -in "$CERT_DIR/server.key" -pubout 2>/dev/null); then
+    chmod 644 "$CERT_DIR/server.key" "$CERT_DIR/server.crt"
     exit 0
 fi
 
@@ -33,6 +34,6 @@ openssl x509 -req -in "$work_dir/server.csr" \
     -days 2 -out "$work_dir/server.crt" -extfile "$work_dir/server.ext" >/dev/null 2>&1
 # The non-root Keycloak container must read this disposable mounted key.
 # The generated directory is private to the host user.
-chmod 644 "$work_dir/server.key"
+chmod 644 "$work_dir/server.key" "$work_dir/server.crt"
 chmod 600 "$work_dir/ca.key"
 mv "$work_dir"/{ca.key,ca.pem,server.key,server.crt,server.csr,server.ext} "$CERT_DIR/"

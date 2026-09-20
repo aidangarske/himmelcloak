@@ -13,6 +13,9 @@
 // Stubs are intentionally unused. Remove once modules are implemented.
 #![allow(dead_code)]
 
+#[cfg(panic = "abort")]
+compile_error!("himmelcloak requires panic=unwind for Tokio time-driver detection");
+
 pub mod authenticator;
 pub mod authn;
 pub mod client;
@@ -22,6 +25,7 @@ pub mod flow;
 
 // Internal engine modules.
 pub(crate) mod crypto;
+pub(crate) mod sensitive_json;
 pub(crate) mod standard;
 pub(crate) mod token;
 pub(crate) mod transport;

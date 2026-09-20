@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::flow::{Answer, AuthFlow, AuthStep, Tokens};
+use crate::sensitive_json::SensitiveClaims;
 use crate::standard;
 use crate::token::{self, Metadata};
 use crate::transport::{CurlTransport, HttpTransport};
@@ -57,7 +58,7 @@ impl PublicClientApplication {
         password: &str,
         totp: Option<&str>,
     ) -> Result<Tokens> {
-        if !cfg!(feature = "password") || cfg!(any(feature = "passwordless", feature = "gov")) {
+        if !cfg!(feature = "password") {
             return Err(Error::UnsupportedFactor);
         }
         if totp.is_some() && !cfg!(feature = "totp") {
@@ -82,19 +83,22 @@ impl PublicClientApplication {
         .await?;
         let claims = self.verify_tokens(&tokens, None).await?;
         tokens.verified_subject = claims.get("sub").and_then(Value::as_str).map(str::to_owned);
+        tokens.verified_issuer = Some(self.metadata.issuer.clone());
+        tokens.verified_client_id = Some(self.config.client_id.clone());
+        tokens.verified_refresh_token = tokens.refresh_token.clone();
         Ok(tokens)
     }
 
     /// Refresh a verified session, retaining its subject when Keycloak omits a new ID token.
     pub async fn refresh_tokens(&self, previous: &Tokens) -> Result<Tokens> {
-        let subject = previous
-            .verified_subject
-            .as_deref()
-            .ok_or(Error::TokenValidation("unverified session"))?;
+        let subject = self.session_subject(previous)?;
         let refresh_token = previous
             .refresh_token
             .as_deref()
             .ok_or(Error::Protocol("session has no refresh token"))?;
+        if previous.verified_refresh_token.as_deref() != Some(refresh_token) {
+            return Err(Error::TokenValidation("refresh token changed"));
+        }
         let mut tokens = standard::acquire(
             self.transport.as_ref(),
             self.metadata.token_endpoint.clone(),
@@ -111,20 +115,24 @@ impl PublicClientApplication {
             if claims.get("sub").and_then(Value::as_str) != Some(subject) {
                 return Err(Error::TokenValidation("refreshed subject mismatch"));
             }
-        }
-        let user = standard::userinfo(
-            self.transport.as_ref(),
-            self.metadata.userinfo_endpoint.clone(),
-            &tokens.access_token,
-        )
-        .await?;
-        if user.get("sub").and_then(Value::as_str) != Some(subject) {
-            return Err(Error::TokenValidation("refreshed subject mismatch"));
+        } else {
+            let user = standard::userinfo(
+                self.transport.as_ref(),
+                self.metadata.userinfo_endpoint.clone(),
+                &tokens.access_token,
+            )
+            .await?;
+            if user.get("sub").and_then(Value::as_str) != Some(subject) {
+                return Err(Error::TokenValidation("refreshed subject mismatch"));
+            }
         }
         if tokens.refresh_token.is_none() {
             tokens.refresh_token = Some(refresh_token.to_owned());
         }
         tokens.verified_subject = Some(subject.to_owned());
+        tokens.verified_issuer = Some(self.metadata.issuer.clone());
+        tokens.verified_client_id = Some(self.config.client_id.clone());
+        tokens.verified_refresh_token = tokens.refresh_token.clone();
         Ok(tokens)
     }
 
@@ -140,10 +148,7 @@ impl PublicClientApplication {
 
     /// Fetch user information and require it to match the verified session subject.
     pub async fn userinfo(&self, tokens: &Tokens) -> Result<Value> {
-        let subject = tokens
-            .verified_subject
-            .as_deref()
-            .ok_or(Error::TokenValidation("unverified session"))?;
+        let subject = self.session_subject(tokens)?;
         if tokens.id_token.is_some() {
             let claims = self.verify_tokens(tokens, None).await?;
             if claims.get("sub").and_then(Value::as_str) != Some(subject) {
@@ -159,24 +164,37 @@ impl PublicClientApplication {
         if user.get("sub").and_then(Value::as_str) != Some(subject) {
             return Err(Error::TokenValidation("userinfo subject mismatch"));
         }
-        Ok(user)
+        Ok(user.into_value())
+    }
+
+    fn session_subject<'a>(&self, tokens: &'a Tokens) -> Result<&'a str> {
+        let subject = tokens
+            .verified_subject
+            .as_deref()
+            .ok_or(Error::TokenValidation("unverified session"))?;
+        if tokens.verified_issuer.as_deref() != Some(&self.metadata.issuer)
+            || tokens.verified_client_id.as_deref() != Some(&self.config.client_id)
+        {
+            return Err(Error::TokenValidation("session issuer or client mismatch"));
+        }
+        Ok(subject)
     }
 
     pub(crate) async fn verify_tokens(
         &self,
         tokens: &Tokens,
         nonce: Option<&str>,
-    ) -> Result<Value> {
+    ) -> Result<SensitiveClaims> {
         let id_token = tokens
             .id_token
             .as_deref()
             .ok_or(Error::TokenValidation("missing ID token"))?;
-        let kid = token::token_kid(id_token)?;
+        let (kid, algorithm) = token::token_key_info(id_token)?;
         let known = self
             .jwks
             .read()
             .map_err(|_| Error::Protocol("JWKS lock poisoned"))
-            .map(|jwks| token::jwks_has_kid(&jwks, &kid))?;
+            .map(|jwks| token::jwks_has_eligible_key(&jwks, &kid, &algorithm))?;
         if !known {
             let fetched =
                 token::fetch_jwks(self.transport.as_ref(), self.metadata.jwks_uri.clone()).await?;
@@ -274,10 +292,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(
-        feature = "password",
-        not(any(feature = "passwordless", feature = "gov"))
-    ))]
+    #[cfg(feature = "password")]
     #[tokio::test]
     async fn refresh_without_id_token_preserves_verified_userinfo_subject() {
         let fixture: Value =
@@ -294,7 +309,7 @@ mod tests {
                 response(json!({"access_token":"new-access","token_type":"Bearer"})),
                 response(json!({"sub":"alice"})),
                 response(json!({"sub":"alice"})),
-                response(json!({"sub":"mallory"})),
+                response(json!({"sub":"mallory","private":{"name":"hidden"}})),
             ],
         );
         let original = client
@@ -329,6 +344,33 @@ mod tests {
             refresh_token: Some("previous-refresh".to_owned()),
             id_token: None,
             verified_subject: Some("mallory".to_owned()),
+            verified_issuer: Some("https://example.test/realms/test".to_owned()),
+            verified_client_id: Some("client".to_owned()),
+            verified_refresh_token: Some("previous-refresh".to_owned()),
+        };
+        assert_eq!(
+            client.refresh_tokens(&previous).await.err(),
+            Some(Error::TokenValidation("refreshed subject mismatch"))
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_rejects_an_access_token_for_another_subject_without_an_id_token() {
+        let client = app(
+            json!({}),
+            vec![
+                response(json!({"access_token":"other-access","token_type":"Bearer"})),
+                response(json!({"sub":"mallory"})),
+            ],
+        );
+        let previous = Tokens {
+            access_token: "alice-access".to_owned(),
+            refresh_token: Some("alice-refresh".to_owned()),
+            id_token: None,
+            verified_subject: Some("alice".to_owned()),
+            verified_issuer: Some("https://example.test/realms/test".to_owned()),
+            verified_client_id: Some("client".to_owned()),
+            verified_refresh_token: Some("alice-refresh".to_owned()),
         };
         assert_eq!(
             client.refresh_tokens(&previous).await.err(),
@@ -338,45 +380,107 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_rejects_a_swapped_refresh_token_without_an_id_token() {
-        let client = app(
-            serde_json::json!({}),
-            vec![
-                response(json!({"access_token":"bob-access","token_type":"Bearer"})),
-                response(json!({"sub":"bob"})),
-            ],
-        );
+        let client = app(serde_json::json!({}), vec![]);
         let previous = Tokens {
             access_token: "alice-access".to_owned(),
             refresh_token: Some("bob-refresh".to_owned()),
             id_token: None,
             verified_subject: Some("alice".to_owned()),
+            verified_issuer: Some("https://example.test/realms/test".to_owned()),
+            verified_client_id: Some("client".to_owned()),
+            verified_refresh_token: Some("alice-refresh".to_owned()),
         };
         assert_eq!(
             client.refresh_tokens(&previous).await.err(),
-            Some(Error::TokenValidation("refreshed subject mismatch"))
+            Some(Error::TokenValidation("refresh token changed"))
         );
     }
 
     #[tokio::test]
-    async fn password_grant_respects_feature_selection() {
-        let client = app(serde_json::json!({}), vec![]);
-        if !cfg!(feature = "password") || cfg!(any(feature = "passwordless", feature = "gov")) {
+    async fn sessions_never_send_tokens_to_another_issuer_or_client() {
+        let tokens = Tokens {
+            access_token: "alice-access".to_owned(),
+            refresh_token: Some("alice-refresh".to_owned()),
+            id_token: None,
+            verified_subject: Some("alice".to_owned()),
+            verified_issuer: Some("https://example.test/realms/test".to_owned()),
+            verified_client_id: Some("client".to_owned()),
+            verified_refresh_token: Some("alice-refresh".to_owned()),
+        };
+        let mut wrong_client = app(json!({}), vec![]);
+        wrong_client.config.client_id = "another-client".to_owned();
+        let mut wrong_issuer = app(json!({}), vec![]);
+        wrong_issuer.metadata.issuer = "https://other.test/realms/test".to_owned();
+        for client in [&wrong_client, &wrong_issuer] {
             assert_eq!(
-                client
-                    .acquire_token_by_password("alice", "password", None)
-                    .await
-                    .err(),
-                Some(Error::UnsupportedFactor)
+                client.refresh_tokens(&tokens).await.err(),
+                Some(Error::TokenValidation("session issuer or client mismatch"))
             );
-        } else if !cfg!(feature = "totp") {
             assert_eq!(
-                client
-                    .acquire_token_by_password("alice", "password", Some("123456"))
-                    .await
-                    .err(),
-                Some(Error::UnsupportedFactor)
+                client.userinfo(&tokens).await.err(),
+                Some(Error::TokenValidation("session issuer or client mismatch"))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn refresh_keeps_a_rotated_token_available_for_the_next_refresh() {
+        let client = app(
+            serde_json::json!({}),
+            vec![
+                response(json!({
+                    "access_token": "first-access",
+                    "refresh_token": "first-refresh",
+                    "token_type": "Bearer"
+                })),
+                response(json!({"sub":"alice"})),
+                response(json!({
+                    "access_token": "second-access",
+                    "refresh_token": "second-refresh",
+                    "token_type": "Bearer"
+                })),
+                response(json!({"sub":"alice"})),
+            ],
+        );
+        let previous = Tokens {
+            access_token: "original-access".to_owned(),
+            refresh_token: Some("original-refresh".to_owned()),
+            id_token: None,
+            verified_subject: Some("alice".to_owned()),
+            verified_issuer: Some("https://example.test/realms/test".to_owned()),
+            verified_client_id: Some("client".to_owned()),
+            verified_refresh_token: Some("original-refresh".to_owned()),
+        };
+        let first = client.refresh_tokens(&previous).await.unwrap();
+        assert_eq!(first.refresh_token.as_deref(), Some("first-refresh"));
+        let second = client.refresh_tokens(&first).await.unwrap();
+        assert_eq!(second.refresh_token.as_deref(), Some("second-refresh"));
+    }
+
+    #[cfg(not(feature = "password"))]
+    #[tokio::test]
+    async fn password_grant_requires_password_feature() {
+        let client = app(serde_json::json!({}), vec![]);
+        assert_eq!(
+            client
+                .acquire_token_by_password("alice", "password", None)
+                .await
+                .err(),
+            Some(Error::UnsupportedFactor)
+        );
+    }
+
+    #[cfg(all(feature = "password", not(feature = "totp")))]
+    #[tokio::test]
+    async fn password_grant_rejects_totp_without_its_feature() {
+        let client = app(serde_json::json!({}), vec![]);
+        assert_eq!(
+            client
+                .acquire_token_by_password("alice", "password", Some("123456"))
+                .await
+                .err(),
+            Some(Error::UnsupportedFactor)
+        );
     }
 
     #[tokio::test]
@@ -390,6 +494,9 @@ mod tests {
             refresh_token: None,
             id_token: Some(rs["token"].as_str().unwrap().to_owned()),
             verified_subject: None,
+            verified_issuer: None,
+            verified_client_id: None,
+            verified_refresh_token: None,
         };
         let good = app(es["jwk"].clone(), vec![response(rs["jwk"].clone())]);
         assert_eq!(
@@ -401,6 +508,17 @@ mod tests {
         assert_eq!(
             stale.verify_tokens(&tokens, None).await.err(),
             Some(Error::TokenValidation("unknown key ID"))
+        );
+
+        let mut incompatible = rs["jwk"].clone();
+        incompatible["keys"][0]["alg"] = json!("RS384");
+        let same_id_wrong_algorithm = app(incompatible, vec![response(rs["jwk"].clone())]);
+        assert_eq!(
+            same_id_wrong_algorithm
+                .verify_tokens(&tokens, None)
+                .await
+                .unwrap()["sub"],
+            "alice"
         );
     }
 }

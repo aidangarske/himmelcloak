@@ -23,6 +23,9 @@ On Linux, `make native` builds the same native libraries into `.native`. `make b
 and `make lint` use them. The local build requires Autotools, libtool, pkg-config, clang, and a
 Rust 1.95 toolchain. Plain `cargo test` skips the ignored live tests;
 `make test` runs library unit tests only. Use `make test-live` for Keycloak.
+The Linux native build links wolfSSL and libcurl statically so locally built
+applications can run without setting a library search path. Rebuild a prefix
+created by an older shared-library build before using it with this setup.
 
 The test realm's user is `alice` with password `correct-horse-battery-staple`. These credentials
 are for the disposable Docker realm only.
