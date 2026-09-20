@@ -1,4 +1,4 @@
-name: Native Dependency Matrix
+name: wolfSSL and curl compatibility
 
 # Keep the fixed baseline reproducible while detecting upstream drift in
 # wolfSSL and curl without manually updating version strings.

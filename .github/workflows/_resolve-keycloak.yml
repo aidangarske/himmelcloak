@@ -54,7 +54,7 @@ jobs:
             --arg stable "$STABLE_DIGEST" --arg nightly "$NIGHTLY_DIGEST" '{
               include: [
                 {"name":("stable " + $tag),"keycloak-ref":$tag,"keycloak-image":$stable},
-                {"name":"nightly (development)","keycloak-ref":"nightly","keycloak-main-head":$main,"keycloak-image":$nightly}
+                {"name":"nightly","keycloak-ref":"nightly","keycloak-main-head":$main,"keycloak-image":$nightly}
               ]
             }')
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"

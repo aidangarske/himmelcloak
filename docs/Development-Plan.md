@@ -50,3 +50,23 @@ complete when the stock Keycloak oracle demonstrates its successful and
 rejected paths. Hardware-dependent tests can add an emulator gate and a
 separate physical-device gate when that feature arrives; neither substitutes
 for the Keycloak end-to-end suite.
+
+## Prebuilt CI image
+
+The first branch run builds the native test image from `testing/build/Dockerfile`.
+Move that build into a separate image-publishing workflow and store the result
+at `ghcr.io/aidangarske/himmelcloak/tester`. Rebuild and publish it when the
+Dockerfile, native build script, Rust toolchain, or pinned wolfSSL/curl baseline
+changes. Record an immutable image digest for each publication.
+
+Once the image is published, the every-push core and Keycloak jobs should pull
+that digest and mount the current checkout into the container. They still
+compile and test the current Rust code on every push, including real logins
+against stable and nightly Keycloak, but no longer rebuild wolfSSL and curl
+each time. Keep the resolved Keycloak image digests in the test record.
+
+The moving wolfSSL/curl compatibility matrix needs freshly built native
+variants. Run it on a schedule, on demand, and when native build inputs change;
+it should resolve the latest stable and development refs for those runs. This
+keeps the fast login gate independent of upstream native build time while
+retaining compatibility coverage without manual version updates.

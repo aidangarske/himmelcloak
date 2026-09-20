@@ -49,9 +49,9 @@ jobs:
           echo "curl-latest-stable=$CURL_LATEST" >> "$GITHUB_OUTPUT"
           MATRIX=$(jq -nc --arg wolfssl "$WOLFSSL_LATEST" --arg curl "$CURL_LATEST" '{
             include: [
-              {"name":"latest stable","wolfssl-ref":$wolfssl,"curl-ref":$curl},
-              {"name":"wolfSSL master","wolfssl-ref":"master","curl-ref":$curl},
-              {"name":"curl master","wolfssl-ref":$wolfssl,"curl-ref":"master"}
+              {"name":"latest stable wolfSSL and curl","wolfssl-ref":$wolfssl,"curl-ref":$curl},
+              {"name":"wolfSSL master with stable curl","wolfssl-ref":"master","curl-ref":$curl},
+              {"name":"curl master with stable wolfSSL","wolfssl-ref":$wolfssl,"curl-ref":"master"}
             ]
           }')
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"

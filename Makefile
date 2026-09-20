@@ -30,7 +30,7 @@ oracle-down:
 
 test-live: oracle-up
 	$(COMPOSE) build tester
-	$(COMPOSE) run --rm --no-build tester
+	$(COMPOSE) run --rm tester
 
 docker-lint:
 	$(COMPOSE) build tester

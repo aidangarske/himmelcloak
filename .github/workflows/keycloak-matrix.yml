@@ -1,4 +1,4 @@
-name: keycloak-matrix
+name: Keycloak login tests
 on: [push, pull_request]
 
 permissions:
@@ -43,7 +43,7 @@ jobs:
           echo "Keycloak main HEAD at resolution: ${{ matrix.keycloak-main-head }}"
           docker image inspect "$KEYCLOAK_IMAGE" --format '{{index .RepoDigests 0}}'
       - name: Run live login suite
-        run: docker compose -f testing/keycloak/docker-compose.yml run --rm --no-build tester
+        run: docker compose -f testing/keycloak/docker-compose.yml run --rm tester
       - name: Keycloak logs on failure
         if: failure()
         run: docker compose -f testing/keycloak/docker-compose.yml logs --no-color keycloak
