@@ -1,6 +1,5 @@
 /*
  * Himmelcloak native Keycloak authentication
- * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
  * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
  */
 use std::sync::{Arc, RwLock};
@@ -72,6 +71,7 @@ impl PublicClientApplication {
             self.transport.as_ref(),
             self.metadata.token_endpoint.clone(),
             &fields,
+            true,
         )
         .await?;
         self.verify_tokens(&tokens, None).await?;
@@ -87,9 +87,12 @@ impl PublicClientApplication {
                 ("client_id", self.config.client_id.as_str()),
                 ("refresh_token", refresh_token),
             ],
+            false,
         )
         .await?;
-        self.verify_tokens(&tokens, None).await?;
+        if tokens.id_token.is_some() {
+            self.verify_tokens(&tokens, None).await?;
+        }
         Ok(tokens)
     }
 

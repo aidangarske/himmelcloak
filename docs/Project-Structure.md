@@ -9,7 +9,6 @@
 | `crates/himmelcloak/src/standard.rs` | Token, revocation, and userinfo requests |
 | `crates/himmelcloak/src/flow` | Resumable native login state and page driver |
 | `crates/himmelcloak/src/authn` | Factor-specific handlers |
-| `crates/himmelcloak-himmelblau` | Future himmelblau adapter |
 | `testing/keycloak` | Stock Keycloak realm and Docker integration suite |
 | `testing/build` | Reproducible Rust and native-dependency test image |
 | `docs` | Project documentation and wiki source |

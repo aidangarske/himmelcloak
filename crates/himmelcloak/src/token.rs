@@ -1,6 +1,5 @@
 /*
  * Himmelcloak native Keycloak authentication
- * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
  * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
  */
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -149,10 +148,20 @@ pub(crate) fn verify_id_token(
         .decode(signature)
         .map_err(|_| Error::TokenValidation("invalid signature encoding"))?;
     crypto::verify(algorithm, key, message.as_bytes(), &signature)?;
+    validate_claims(&claims_json, issuer, client_id, nonce)?;
+    Ok(claims_json)
+}
+
+fn validate_claims(
+    claims_json: &Value,
+    issuer: &str,
+    client_id: &str,
+    nonce: Option<&str>,
+) -> Result<()> {
     if claims_json.get("iss").and_then(Value::as_str) != Some(issuer) {
         return Err(Error::TokenValidation("issuer mismatch"));
     }
-    if !audience_matches(&claims_json, client_id) {
+    if !audience_matches(claims_json, client_id) {
         return Err(Error::TokenValidation("audience mismatch"));
     }
     let now = SystemTime::now()
@@ -193,7 +202,7 @@ pub(crate) fn verify_id_token(
     {
         return Err(Error::TokenValidation("missing subject"));
     }
-    Ok(claims_json)
+    Ok(())
 }
 
 fn audience_matches(claims: &Value, client_id: &str) -> bool {
@@ -240,8 +249,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{audience_matches, discover, endpoint, token_kid, verify_id_token};
-    use crate::error::Result;
+    use super::{
+        audience_matches, discover, endpoint, token_kid, validate_claims, verify_id_token,
+    };
+    use crate::error::{Error, Result};
     use crate::transport::{HttpTransport, Request, Response};
     use url::Url;
 
@@ -302,6 +313,61 @@ mod tests {
         assert!(!audience_matches(&claims, "himmelcloak"));
         let claims = json!({"aud": "himmelcloak", "azp": "himmelcloak"});
         assert!(audience_matches(&claims, "himmelcloak"));
+    }
+
+    #[test]
+    fn rejects_invalid_id_token_claims() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid = json!({
+            "iss": "https://example.test/realms/test",
+            "aud": "client",
+            "sub": "alice",
+            "exp": now + 3600,
+            "iat": now,
+            "nbf": now,
+            "nonce": "request-nonce"
+        });
+        let verify = |claims: &serde_json::Value| {
+            validate_claims(
+                claims,
+                "https://example.test/realms/test",
+                "client",
+                Some("request-nonce"),
+            )
+        };
+        assert!(verify(&valid).is_ok());
+
+        let cases = [
+            (
+                "iss",
+                json!("https://other.example/realms/test"),
+                "issuer mismatch",
+            ),
+            ("aud", json!("other-client"), "audience mismatch"),
+            ("sub", json!(""), "missing subject"),
+            ("exp", json!(now - 1), "token expired"),
+            ("iat", json!(now + 120), "token issued in future"),
+            ("nbf", json!(now + 120), "token not yet valid"),
+            ("nonce", json!("wrong"), "nonce mismatch"),
+        ];
+        for (field, value, expected) in cases {
+            let mut claims = valid.clone();
+            claims[field] = value;
+            assert_eq!(
+                verify(&claims),
+                Err(Error::TokenValidation(expected)),
+                "{field}"
+            );
+        }
+        let mut missing_subject = valid;
+        missing_subject.as_object_mut().unwrap().remove("sub");
+        assert_eq!(
+            verify(&missing_subject),
+            Err(Error::TokenValidation("missing subject"))
+        );
     }
 
     #[test]

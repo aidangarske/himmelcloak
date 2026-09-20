@@ -1,7 +1,6 @@
 # License
 
-himmelcloak is dual-licensed under **LGPL-3.0-or-later OR GPL-3.0-or-later** (at your option),
-matching the himmelblau ecosystem (libhimmelblau is LGPL-3.0; okta-auth-rs is dual LGPL/GPL).
+himmelcloak is dual-licensed under **LGPL-3.0-or-later OR GPL-3.0-or-later** (at your option).
 
 The default implementation uses the GPL-licensed `wolfssl-wolfcrypt` wrapper and wolfSSL C library.
 Distribute a combined build under GPL-3.0 unless a separate commercial license covers those wolfSSL

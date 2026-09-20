@@ -1,20 +1,17 @@
 # Architecture
 
-Himmelcloak is a standalone Rust client for stock Keycloak. The core crate has
-no dependency on himmelblau; a separate adapter will translate its typed login
-steps into himmelblau's identity-provider interface.
+Himmelcloak is a standalone Rust client for stock Keycloak. Applications call
+its public API directly; the library owns the Keycloak protocol and token
+validation.
 
 ```mermaid
-flowchart TB
-    LOGIN[Linux login caller] --> ADAPTER[himmelcloak-himmelblau adapter<br/>planned]
-    ADAPTER --> API[PublicClientApplication]
-    API --> OIDC[OIDC core<br/>implemented]
-    API --> FLOW[Resumable login flow<br/>planned]
-    OIDC --> CRYPTO[wolfCrypt<br/>hash and JWT signature verification]
-    OIDC --> HTTP[Rust curl transport]
-    FLOW --> HTTP
-    HTTP --> TLS[libcurl with wolfSSL TLS]
-    TLS --> KC[Unmodified Keycloak server]
+flowchart LR
+    APP[Linux application] --> API[Himmelcloak API]
+    API --> OIDC[OIDC core]
+    API -. planned .-> FLOW[Native login flow]
+    OIDC --> HTTP[libcurl + wolfSSL] --> KC[Stock Keycloak]
+    OIDC --> CRYPTO[wolfCrypt]
+    FLOW -.-> HTTP
 ```
 
 ## Current baseline
@@ -71,6 +68,12 @@ used by the core. The Rust `curl` crate drives libcurl, built with wolfSSL as
 its TLS backend. The native build pins wolfSSL v5.9.2-stable. Future optional
 modules can add wolfTPM, wolfHSM, wolfPKCS11, and wolfCOSE without coupling the
 baseline OIDC client to those devices.
+
+Request bodies are streamed from zeroizing Rust buffers into libcurl. libcurl
+may still hold transient copies of sent bytes, and its HTTP header list copies
+bearer tokens into native memory. Rust buffer cleanup cannot erase those native
+copies. Treat process memory and core dumps as sensitive while the client is
+running.
 
 The source is dual-licensed; the default combined build links GPL wolfSSL
 components. See [Licensing](Licensing.md) for the distribution implications.

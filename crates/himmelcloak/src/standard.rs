@@ -1,6 +1,5 @@
 /*
  * Himmelcloak native Keycloak authentication
- * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
  * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
  */
 use serde::Deserialize;
@@ -32,6 +31,7 @@ pub(crate) async fn acquire(
     transport: &dyn HttpTransport,
     endpoint: Url,
     fields: &[(&str, &str)],
+    require_id_token: bool,
 ) -> Result<Tokens> {
     let response = transport.send(Request::form(endpoint, fields)).await?;
     if matches!(response.status, 400 | 401 | 403) {
@@ -45,7 +45,7 @@ pub(crate) async fn acquire(
     if !parsed.token_type.eq_ignore_ascii_case("bearer") || parsed.access_token.is_empty() {
         return Err(Error::Protocol("unexpected token type"));
     }
-    if parsed.id_token.is_none() {
+    if require_id_token && parsed.id_token.is_none() {
         return Err(Error::Protocol("token response has no ID token"));
     }
     Ok(Tokens {
@@ -114,8 +114,51 @@ pub(crate) async fn userinfo(
 
 #[cfg(test)]
 mod tests {
-    use super::grant_error;
-    use crate::error::Error;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+
+    use super::{acquire, grant_error};
+    use crate::error::{Error, Result};
+    use crate::transport::{HttpTransport, Request, Response};
+    use url::Url;
+
+    struct RecordedTransport(Mutex<Option<Response>>);
+
+    impl HttpTransport for RecordedTransport {
+        fn send(
+            &self,
+            _request: Request,
+        ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+            let response = self.0.lock().unwrap().take().unwrap();
+            Box::pin(async move { Ok(response) })
+        }
+    }
+
+    fn refresh_response() -> RecordedTransport {
+        RecordedTransport(Mutex::new(Some(Response {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"access_token":"refreshed","token_type":"Bearer"}"#.to_vec(),
+            cookies: Vec::new(),
+        })))
+    }
+
+    #[tokio::test]
+    async fn refresh_may_omit_id_token_but_initial_grant_may_not() {
+        let endpoint = Url::parse("https://keycloak.example/token").unwrap();
+        let tokens = acquire(&refresh_response(), endpoint.clone(), &[], false)
+            .await
+            .unwrap();
+        assert_eq!(tokens.access_token, "refreshed");
+        assert!(tokens.id_token.is_none());
+        assert_eq!(
+            acquire(&refresh_response(), endpoint, &[], true)
+                .await
+                .err(),
+            Some(Error::Protocol("token response has no ID token"))
+        );
+    }
 
     #[test]
     fn distinguishes_bad_credentials_from_disabled_direct_grant() {

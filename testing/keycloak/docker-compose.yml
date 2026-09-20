@@ -36,4 +36,4 @@ services:
     depends_on:
       - keycloak
     entrypoint: ["/work/testing/keycloak/wait-and-test.sh"]
-    command: ["cargo", "test", "--locked", "-p", "himmelcloak", "--test", "live_keycloak"]
+    command: ["cargo", "test", "--locked", "-p", "himmelcloak", "--test", "live_keycloak", "--", "--ignored"]

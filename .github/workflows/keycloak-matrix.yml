@@ -46,12 +46,12 @@ jobs:
         run: |
           docker compose -f testing/keycloak/docker-compose.yml run --rm \
             -e HIMMELCLOAK_TEST_VERBOSE=1 tester \
-            cargo test --locked -p himmelcloak --test live_keycloak -- --nocapture
+            cargo test --locked -p himmelcloak --test live_keycloak -- --ignored --nocapture
       - name: Show Keycloak authentication events
         if: always()
         run: |
           docker compose -f testing/keycloak/docker-compose.yml logs --no-color keycloak \
-            | awk '/type=.*LOGIN/ { print; seen = 1 } END { if (!seen) print "(no LOGIN events appeared in Keycloak logs)" }'
+            | awk -f testing/keycloak/auth-events.awk
       - name: Keycloak logs on failure
         if: failure()
         run: docker compose -f testing/keycloak/docker-compose.yml logs --no-color keycloak

@@ -27,9 +27,9 @@ fi
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 result=0
 "${compose[@]}" run --rm -e HIMMELCLOAK_TEST_VERBOSE=1 tester \
-    cargo test --locked -p himmelcloak --test live_keycloak -- --nocapture || result=$?
+    cargo test --locked -p himmelcloak --test live_keycloak -- --ignored --nocapture || result=$?
 
 echo 'Keycloak server authentication events:'
 "${compose[@]}" logs --no-color --since "$started" keycloak \
-    | awk '/type=.*LOGIN/ { print; seen = 1 } END { if (!seen) print "(no LOGIN events appeared in Keycloak logs)" }'
+    | awk -f "$script_dir/auth-events.awk"
 exit "$result"

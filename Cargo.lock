@@ -166,13 +166,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "himmelcloak-himmelblau"
-version = "0.0.0"
-dependencies = [
- "himmelcloak",
-]
-
-[[package]]
 name = "icu_collections"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

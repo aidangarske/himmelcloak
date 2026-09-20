@@ -1,46 +1,30 @@
 # himmelcloak
 
 himmelcloak is a standalone Rust library for native authentication against
-self-hosted Keycloak. It is intended for Linux login integrations, including
-himmelblau, and requires no plugin or other code on the Keycloak server.
+self-hosted Keycloak. Linux applications can use it directly. It does not
+depend on another Linux login provider or require a Keycloak server plugin.
+Himmelcloak's own PAM and SSH login integration is planned, not yet implemented.
 The library first uses Keycloak's standard OIDC APIs where they cover a login.
 A typed, resumable flow driver is the intended path for factors that Keycloak
 normally presents through its browser login pages.
 
 The current implementation covers discovery, password direct grant, ID-token
 verification, refresh, revocation, and userinfo. The native flow driver,
-WebAuthn, recovery codes, and the himmelblau adapter are still in development.
+WebAuthn, and recovery codes are still in development.
 HTTPS uses wolfSSL through libcurl, and cryptographic operations use the
 official `wolfssl-wolfcrypt` Rust crate.
 
 ## Architecture
 
 ```mermaid
-flowchart TB
-    OS[Linux login caller<br/>himmelblau or another integration]
-    ADAPTER[himmelcloak-himmelblau adapter<br/>planned]
-    API[PublicClientApplication<br/>typed tokens and auth steps]
-    OIDC[OIDC core<br/>discovery, token, JWKS, userinfo]
-    FLOW[Resumable native flow driver<br/>in development]
-    HTTP[HTTP transport<br/>Rust curl crate and libcurl]
-    TLS[wolfSSL TLS]
-    CRYPT[wolfCrypt<br/>hashing and signature verification]
-    KC[Stock Keycloak server]
-
-    OS --> ADAPTER --> API
-    API --> OIDC
-    API --> FLOW
-    OIDC --> HTTP
-    FLOW --> HTTP
-    HTTP --> TLS
-    OIDC --> CRYPT
-    FLOW --> CRYPT
-    HTTP -->|HTTPS and OIDC| KC
+flowchart LR
+    APP[Linux application] --> HC[Himmelcloak<br/>OIDC client]
+    HC --> HTTP[libcurl + wolfSSL] --> KC[Stock Keycloak]
+    HC --> CRYPTO[wolfCrypt<br/>token verification]
 ```
 
-The core crate does not depend on himmelblau. The adapter will translate its
-typed challenges into the Linux login conversation. See
-[Architecture](docs/Architecture.md) for the flow design and extension points.
+See [Architecture](docs/Architecture.md) for the current implementation and
+planned native login flow.
 
 ## Quick start
 

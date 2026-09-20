@@ -12,7 +12,7 @@ The core maintainer owns the public types, OIDC and flow state machine, wolfSSL
 and wolfCrypt integration, protocol and security rules, and CI test contract.
 This is the largest share of the work because every method builds on it. Other
 contributors can own bounded features such as WebAuthn USB, a virtual
-authenticator, X.509, recovery codes, or the himmelblau adapter. Assign the
+authenticator, X.509, recovery codes, or device authorization. Assign the
 next feature when its core interface and Keycloak fixture are ready; these are
 feature assignments, not fixed roles that all six people must work on at once.
 
@@ -36,9 +36,13 @@ feature assignments, not fixed roles that all six people must work on at once.
    verify the request and response bindings, and integrate the adapter with the
    flow engine. Use a virtual authenticator for every-push CI; USB and platform
    hardware are separate feature PRs.
-5. **Integration and optional backends:** implement the himmelblau adapter and
-   optional X.509, TPM, HSM, smartcard, and COSE paths. Each backend gets an
-   isolated interface, feature flag, and appropriate emulator or hardware test.
+5. **Linux login integration:** build Himmelcloak's own Linux account and login
+   components on the working authentication engine. Define identity mapping,
+   local session handling, and PAM/SSH test cases before enabling system login.
+   Exercise console and SSH flows in disposable Linux VMs or containers.
+6. **Optional backends:** implement X.509, TPM, HSM, smartcard, and COSE paths.
+   Each backend gets an isolated interface, feature flag, and appropriate
+   emulator or hardware test.
 
 ## Required checks
 

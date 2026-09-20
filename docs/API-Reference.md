@@ -14,11 +14,13 @@ let app = PublicClientApplication::new(
 For a private CA or custom timeout, create `Config` and call
 `PublicClientApplication::with_config`. The library verifies the discovered issuer and requires
 libcurl to report wolfSSL as its TLS backend.
+Async calls require a Tokio runtime and return a transport error when polled
+without one.
 
 | Method | Behavior |
 | --- | --- |
 | `acquire_token_by_password(user, password, totp)` | Direct Access Grant, when enabled on the Keycloak client |
-| `refresh_tokens(refresh_token)` | Obtain a new token set |
+| `refresh_tokens(refresh_token)` | Obtain a new token set; the ID token may be absent if Keycloak omits it |
 | `revoke_token(token)` | Revoke an access or refresh token |
 | `userinfo(&tokens)` | Fetch claims and compare the subject to the verified ID token |
 

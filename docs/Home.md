@@ -2,7 +2,7 @@
 
 Himmelcloak is a standalone Rust library for native Keycloak authentication on Linux. It uses
 Keycloak's OIDC APIs and a wolfSSL-backed HTTPS transport. The long-term interface is a typed,
-resumable login flow for Linux integrations such as himmelblau.
+resumable login flow for Linux applications.
 
 ## Pages
 

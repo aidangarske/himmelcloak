@@ -1,6 +1,5 @@
 /*
  * Himmelcloak native Keycloak authentication
- * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
  * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
  */
 
@@ -25,6 +24,7 @@ fn config() -> Config {
 }
 
 #[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
 async fn direct_grant_lifecycle() {
     trace("discover Keycloak OIDC metadata and signing keys over HTTPS");
     let app = PublicClientApplication::with_config(config())
@@ -72,13 +72,17 @@ async fn direct_grant_lifecycle() {
     let refreshed = app.refresh_tokens(refresh).await.unwrap();
     assert!(!refreshed.access_token.is_empty());
     trace("Keycloak accepted the refresh token and issued new tokens");
-    app.revoke_token(refreshed.refresh_token.as_deref().unwrap_or(refresh))
-        .await
-        .unwrap();
-    trace("Keycloak accepted token revocation");
+    let revoked = refreshed.refresh_token.as_deref().unwrap_or(refresh);
+    app.revoke_token(revoked).await.unwrap();
+    assert!(matches!(
+        app.refresh_tokens(revoked).await,
+        Err(Error::AuthenticationRejected)
+    ));
+    trace("Keycloak rejected the revoked refresh token");
 }
 
 #[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
 async fn rejects_untrusted_keycloak_certificate() {
     let mut config = config();
     config.ca_bundle = None;

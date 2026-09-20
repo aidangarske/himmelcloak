@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-for _ in $(seq 1 90); do
-    if curl --silent --fail --cacert "$KEYCLOAK_CA" \
+deadline=$((SECONDS + 180))
+while (( SECONDS < deadline )); do
+    if curl --silent --fail --connect-timeout 2 --max-time 2 --cacert "$KEYCLOAK_CA" \
         "$KEYCLOAK_URL/realms/himmelcloak-test/.well-known/openid-configuration" \
         >/dev/null; then
         exec "$@"

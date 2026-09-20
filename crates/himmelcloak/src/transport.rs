@@ -1,6 +1,5 @@
 /*
  * Himmelcloak native Keycloak authentication
- * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
  * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
  */
 use std::future::Future;
@@ -125,7 +124,10 @@ impl HttpTransport for CurlTransport {
         let ca_bundle = self.ca_bundle.clone();
         let timeout = self.timeout;
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || send_blocking(request, ca_bundle, timeout))
+            let runtime = tokio::runtime::Handle::try_current()
+                .map_err(|_| Error::Transport("Tokio runtime required".to_owned()))?;
+            runtime
+                .spawn_blocking(move || send_blocking(request, ca_bundle, timeout))
                 .await
                 .map_err(|_| Error::Transport("HTTP worker failed".to_owned()))?
         })
@@ -139,6 +141,11 @@ fn send_blocking(
 ) -> Result<Response> {
     let mut easy = Easy::new();
     easy.url(request.url.as_str()).map_err(curl_error)?;
+    // Loopback HTTP is allowed for local tests; never send its credentials
+    // through a proxy selected from the process environment.
+    if request.url.scheme() == "http" {
+        easy.proxy("").map_err(curl_error)?;
+    }
     easy.timeout(timeout).map_err(curl_error)?;
     easy.connect_timeout(timeout).map_err(curl_error)?;
     easy.follow_location(false).map_err(curl_error)?;
@@ -161,7 +168,8 @@ fn send_blocking(
     }
     if matches!(request.method, Method::Post) {
         easy.post(true).map_err(curl_error)?;
-        easy.post_fields_copy(&request.body).map_err(curl_error)?;
+        easy.post_field_size(request.body.len() as u64)
+            .map_err(curl_error)?;
     }
 
     let mut response = Response {
@@ -171,9 +179,19 @@ fn send_blocking(
         cookies: Vec::new(),
     };
     let mut header_bytes = 0usize;
+    let mut sent_bytes = 0usize;
     let oversized = std::cell::Cell::new(false);
     let transfer_result = {
         let mut transfer = easy.transfer();
+        transfer
+            .read_function(|buffer| {
+                let remaining = &request.body[sent_bytes..];
+                let count = remaining.len().min(buffer.len());
+                buffer[..count].copy_from_slice(&remaining[..count]);
+                sent_bytes += count;
+                Ok(count)
+            })
+            .map_err(curl_error)?;
         transfer
             .write_function(|bytes| {
                 if response.body.len().saturating_add(bytes.len()) > MAX_RESPONSE {
@@ -218,4 +236,124 @@ fn send_blocking(
 
 fn curl_error(error: curl::Error) -> Error {
     Error::Transport(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::thread;
+
+    use super::{send_blocking, CurlTransport, HttpTransport, Request, MAX_HEADERS, MAX_RESPONSE};
+    use crate::error::Error;
+    use url::Url;
+
+    struct NoopWake;
+
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    #[test]
+    fn missing_tokio_runtime_returns_an_error() {
+        let transport = CurlTransport {
+            ca_bundle: None,
+            timeout: std::time::Duration::from_secs(2),
+        };
+        let request = Request::get(Url::parse("http://127.0.0.1:9/").unwrap());
+        let mut future = transport.send(request);
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        assert!(matches!(
+            future.as_mut().poll(&mut context),
+            Poll::Ready(Err(Error::Transport(message))) if message == "Tokio runtime required"
+        ));
+    }
+
+    fn serve(header_size: usize, body_size: usize) -> (Url, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let thread = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(_) => return,
+                }
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).unwrap();
+                if count == 0 || request.len() > 8192 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let prefix = format!("HTTP/1.1 200 OK\r\nContent-Length: {body_size}\r\nX-Pad: ");
+            let suffix = "\r\n\r\n";
+            let pad = "x".repeat(header_size - prefix.len() - suffix.len());
+            let headers = format!("{prefix}{pad}{suffix}");
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.write_all(&vec![b'x'; body_size]);
+        });
+        (url, thread)
+    }
+
+    #[test]
+    fn response_limits_accept_boundaries_and_reject_oversize() {
+        for (header_size, body_size, allowed) in [
+            (128, MAX_RESPONSE, true),
+            (128, MAX_RESPONSE + 1, false),
+            (MAX_HEADERS, 0, true),
+            (MAX_HEADERS + 1, 0, false),
+        ] {
+            let (url, server) = serve(header_size, body_size);
+            let response =
+                send_blocking(Request::get(url), None, std::time::Duration::from_secs(5));
+            server.join().unwrap();
+            if allowed {
+                assert_eq!(response.unwrap().body.len(), body_size);
+            } else {
+                assert!(matches!(
+                    response,
+                    Err(Error::Protocol("HTTP response too large"))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn loopback_http_does_not_use_environment_proxy() {
+        let keys = ["http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY"];
+        let previous: Vec<_> = keys
+            .iter()
+            .map(|key| (*key, std::env::var_os(key)))
+            .collect();
+        std::env::set_var("http_proxy", "http://127.0.0.1:9");
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:9");
+        std::env::remove_var("no_proxy");
+        std::env::remove_var("NO_PROXY");
+
+        let (url, server) = serve(128, 0);
+        let response = send_blocking(Request::get(url), None, std::time::Duration::from_secs(5));
+        for (key, value) in previous {
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            } else {
+                std::env::remove_var(key);
+            }
+        }
+        server.join().unwrap();
+        assert_eq!(response.unwrap().status, 200);
+    }
 }

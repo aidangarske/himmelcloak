@@ -1,6 +1,5 @@
 /*
  * Himmelcloak native Keycloak authentication
- * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
  * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
  */
 //! The resumable, caller-driven auth state machine.
@@ -46,7 +45,7 @@ pub enum Answer {
 
 /// Resumable continue-state (cookie jar, action_url, execution, session_code, tab_id,
 /// pkce_verifier, ...). serde Serialize/Deserialize gets added so the daemon can persist it
-/// between PAM prompts (same role as libhimmelblau `MFAAuthContinue` / okta's flow handle).
+/// between caller prompts.
 #[derive(Default)]
 pub struct AuthFlow {
     // Fields to fill.

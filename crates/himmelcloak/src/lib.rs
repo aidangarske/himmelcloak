@@ -1,13 +1,10 @@
 /*
  * Himmelcloak native Keycloak authentication
- * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
  * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
  */
 //! himmelcloak, native, no-browser authentication against Keycloak.
 //!
-//! Standalone Rust library: no dependency on himmelblau or libhimmelblau. himmelblau consumes it
-//! through a thin adapter (see the `himmelcloak-himmelblau` crate). Sister to libhimmelblau
-//! (Entra) and okta-auth-rs (Okta).
+//! Standalone Rust library for Linux applications using stock Keycloak.
 //!
 //! The public API and flow engine define the shape every method plugs into: changing a
 //! `Challenge`/`Answer` variant, a trait signature, or `AuthStep` affects every caller. Per-method
