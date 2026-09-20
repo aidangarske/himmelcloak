@@ -1,5 +1,5 @@
 # himmelcloak workspace. Native, no-browser Keycloak authentication for Linux.
-# See docs/plan.md, docs/roadmap.md, docs/architecture.md, docs/assignments/.
+# See docs/README.md.
 [workspace]
 resolver = "2"
 members = ["crates/himmelcloak", "crates/himmelcloak-himmelblau"]

@@ -1,0 +1,4 @@
+/.git
+/target
+/.native
+/testing/keycloak/.generated

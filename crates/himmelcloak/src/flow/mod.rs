@@ -1,4 +1,8 @@
-// SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+/*
+ * Himmelcloak native Keycloak authentication
+ * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
+ * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+ */
 //! The resumable, caller-driven auth state machine.
 //!
 //! `Challenge`, `Answer`, `AuthStep`, and `AuthFlow` are the public contract every factor plugs
@@ -7,6 +11,7 @@ pub mod classify;
 pub mod driver;
 
 use crate::authenticator::{WebAuthnAssertion, WebAuthnChallenge};
+use zeroize::Zeroize;
 
 /// Returned by both `initiate_auth_flow` and `continue_auth_flow`.
 #[non_exhaustive]
@@ -65,4 +70,16 @@ pub struct Tokens {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub id_token: Option<String>,
+}
+
+impl Drop for Tokens {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+        if let Some(token) = &mut self.refresh_token {
+            token.zeroize();
+        }
+        if let Some(token) = &mut self.id_token {
+            token.zeroize();
+        }
+    }
 }

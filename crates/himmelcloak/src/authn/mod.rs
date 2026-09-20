@@ -1,4 +1,8 @@
-// SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+/*
+ * Himmelcloak native Keycloak authentication
+ * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
+ * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+ */
 //! Per-method factor modules. Each module implements one factor behind its feature and plugs into
 //! the flow engine; it must not modify the engine or the public `Challenge`/`Answer` types.
 #[cfg(feature = "email")]

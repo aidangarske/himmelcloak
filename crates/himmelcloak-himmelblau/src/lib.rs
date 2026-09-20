@@ -1,4 +1,8 @@
-// SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+/*
+ * Himmelcloak native Keycloak authentication
+ * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
+ * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+ */
 //! himmelblau `IdProvider` adapter over himmelcloak.
 //!
 //! Implements himmelblau's `IdProvider` trait by driving himmelcloak's

@@ -1,18 +1,17 @@
-# himmelcloak
+# Himmelcloak documentation
 
-Native, no-browser authentication against a self-hosted Keycloak, as a standalone Rust library.
-Sister to libhimmelblau (Microsoft Entra) and okta-auth-rs (Okta): a Linux integration such as
-himmelblau consumes it through a thin adapter.
+Himmelcloak is a standalone Rust library for native Keycloak authentication on Linux. It uses
+Keycloak's OIDC APIs and a wolfSSL-backed HTTPS transport. The long-term interface is a typed,
+resumable login flow for Linux integrations such as himmelblau.
 
 ## Pages
 
-- [Architecture](Architecture) — layers, the public contract, the flow driver, and the crypto stack.
-
-## Build
-
-    cargo build --workspace
-    cargo test  --workspace
-
-## License
-
-Dual LGPL-3.0-or-later or GPL-3.0-or-later.
+| Page | Description |
+| --- | --- |
+| [[Getting Started]] | Build and run a real Keycloak login test |
+| [[Architecture]] | Components and flow-driver design |
+| [[Development Plan]] | Core milestones and independent feature PRs |
+| [[API Reference]] | Current public Rust interface |
+| [[Testing]] | Docker oracle and CI gates |
+| [[Project Structure]] | Workspace layout |
+| [[Licensing]] | Source and combined-build terms |

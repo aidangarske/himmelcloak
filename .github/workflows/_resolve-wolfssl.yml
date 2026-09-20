@@ -1,44 +1,57 @@
-name: Resolve wolfSSL versions
+name: Resolve native dependency refs
 
-# Reusable workflow. Resolves the latest wolfSSL v*-stable tag at run time (so we never bump a
-# hardcoded version) and emits a matrix of [latest stable, master]. master surfaces upstream drift.
+# Resolve moving upstream refs at run time. The normal build remains pinned to
+# wolfSSL v5.9.2-stable; this matrix catches compatibility drift.
 on:
   workflow_call:
     outputs:
       matrix:
-        description: 'JSON matrix include of wolfSSL refs (latest -stable + master)'
+        description: 'JSON matrix of moving wolfSSL and curl refs'
         value: ${{ jobs.resolve.outputs.matrix }}
       latest-stable:
         description: 'Latest wolfSSL v*-stable tag resolved at run time'
         value: ${{ jobs.resolve.outputs.latest-stable }}
+      curl-latest-stable:
+        description: 'Latest curl release tag resolved at run time'
+        value: ${{ jobs.resolve.outputs.curl-latest-stable }}
 
 permissions:
   contents: read
 
 jobs:
   resolve:
-    name: Resolve wolfSSL version matrix
+    name: Resolve wolfSSL and curl refs
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
       latest-stable: ${{ steps.set.outputs.latest-stable }}
+      curl-latest-stable: ${{ steps.set.outputs.curl-latest-stable }}
     steps:
-      - name: Resolve latest -stable wolfSSL tag
+      - name: Resolve latest stable tags and development branches
         id: set
         run: |
           set -euo pipefail
-          LATEST=$(git ls-remote --tags --refs https://github.com/wolfSSL/wolfssl.git 'v*-stable' \
-                     | awk -F/ '{print $NF}' | sort -V | tail -n 1)
-          if [ -z "${LATEST:-}" ]; then
-            echo "::error::Could not resolve latest wolfSSL -stable tag from remote"
+          WOLFSSL_LATEST=$(git ls-remote --tags --refs https://github.com/wolfSSL/wolfssl.git 'v*-stable' \
+                     | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-stable$' \
+                     | sort -V | tail -n 1)
+          CURL_LATEST=$(git ls-remote --tags --refs https://github.com/curl/curl.git 'curl-*' \
+                     | awk -F/ '{print $NF}' | grep -E '^curl-[0-9]+_[0-9]+_[0-9]+$' \
+                     | sort -V | tail -n 1)
+          if [ -z "${WOLFSSL_LATEST:-}" ] || [ -z "${CURL_LATEST:-}" ]; then
+            echo "::error::Could not resolve latest wolfSSL or curl release tag from remote"
             exit 1
           fi
-          echo "Latest stable wolfSSL: $LATEST"
-          echo "latest-stable=$LATEST" >> "$GITHUB_OUTPUT"
-          MATRIX=$(jq -nc --arg latest "$LATEST" '{
+          git ls-remote --exit-code --heads https://github.com/wolfSSL/wolfssl.git master >/dev/null
+          git ls-remote --exit-code --heads https://github.com/curl/curl.git master >/dev/null
+          echo "Latest stable wolfSSL: $WOLFSSL_LATEST"
+          echo "Latest stable curl: $CURL_LATEST"
+          echo "latest-stable=$WOLFSSL_LATEST" >> "$GITHUB_OUTPUT"
+          echo "curl-latest-stable=$CURL_LATEST" >> "$GITHUB_OUTPUT"
+          MATRIX=$(jq -nc --arg wolfssl "$WOLFSSL_LATEST" --arg curl "$CURL_LATEST" '{
             include: [
-              {"wolfssl-version":$latest,"wolfssl-ref":$latest},
-              {"wolfssl-version":"master","wolfssl-ref":"master"}
+              {"name":"latest stable","wolfssl-ref":$wolfssl,"curl-ref":$curl},
+              {"name":"wolfSSL master","wolfssl-ref":"master","curl-ref":$curl},
+              {"name":"curl master","wolfssl-ref":$wolfssl,"curl-ref":"master"}
             ]
           }')
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"

@@ -1,18 +1,39 @@
-// SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
-//! Crate error type + Result alias. Grow the enum as features land.
+/*
+ * Himmelcloak native Keycloak authentication
+ * Copyright (C) Aidan Garske <aidan@wolfssl.com> 2026
+ * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+ */
 use core::fmt;
 
+/// Errors deliberately omit response bodies and credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    /// Skeleton placeholder: this path is not yet implemented. Replace with real variants.
+    InvalidConfiguration(&'static str),
+    Transport(String),
+    TlsBackend,
+    HttpStatus(u32),
+    AuthenticationRejected,
+    Protocol(&'static str),
+    TokenValidation(&'static str),
+    Crypto,
+    UnsupportedFactor,
     NotImplemented,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NotImplemented => write!(f, "not implemented"),
+            Self::InvalidConfiguration(reason) => write!(f, "invalid configuration: {reason}"),
+            Self::Transport(reason) => write!(f, "transport error: {reason}"),
+            Self::TlsBackend => write!(f, "libcurl is not using wolfSSL"),
+            Self::HttpStatus(status) => write!(f, "unexpected HTTP status {status}"),
+            Self::AuthenticationRejected => write!(f, "authentication rejected"),
+            Self::Protocol(reason) => write!(f, "OIDC protocol error: {reason}"),
+            Self::TokenValidation(reason) => write!(f, "token validation failed: {reason}"),
+            Self::Crypto => write!(f, "wolfCrypt operation failed"),
+            Self::UnsupportedFactor => write!(f, "authentication factor not supported"),
+            Self::NotImplemented => write!(f, "not implemented"),
         }
     }
 }

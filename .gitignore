@@ -1,4 +1,6 @@
 /target
+/.native
+/testing/keycloak/.generated/
 **/*.rs.bk
 .DS_Store
 /planning/

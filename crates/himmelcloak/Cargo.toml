@@ -11,10 +11,12 @@ description = "Native, no-browser Keycloak authentication for Linux (sister to l
 workspace = true
 
 [features]
-# Default: phishing-resistant core. Hardware (TPM/HSM) and COSE are additive and off by default.
-default = ["password", "totp", "webauthn", "webauthn-usb"]
+# Reserve the planned additive feature names. The current OIDC core, password
+# grant, wolfCrypt, and wolfSSL-backed transport are built in every profile;
+# these flags do not yet compile out code.
+default = ["password", "totp"]
 
-# --- auth methods (each independently compile-out-able) ---
+# --- planned auth methods ---
 password = []
 totp = []
 sms = []
@@ -32,8 +34,7 @@ webauthn-nfc = ["webauthn"]
 webauthn-ble = ["webauthn"]
 webauthn-virtual = ["webauthn"]
 
-# crypto and tls placeholders until the wolf crates are
-#     wired, real optional deps get added then
+# --- reserved names for future optional crypto and TLS backends ---
 crypto-wolfcrypt = []
 tls-wolfssl = []
 
@@ -52,6 +53,12 @@ gov = ["x509","webauthn","webauthn-usb","webauthn-platform","totp","recovery","h
 passwordless = ["webauthn","webauthn-usb","x509","recovery"]
 
 [dependencies]
-# Intentionally EMPTY for the skeleton so `cargo build` is green with no system libs.
-# Real deps are added additively as features land: wolfcrypt-rs / wolfssl,
-# rustls + rustls-wolfcrypt-provider, wolftpm (PR #602), an HTTP client, serde, etc.
+base64 = "0.22"
+curl = { version = "=0.4.50", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signature = "2.2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+url = "2"
+wolfssl-wolfcrypt = { version = "=2.2.0", features = ["signature"] }
+zeroize = { version = "1", features = ["zeroize_derive"] }

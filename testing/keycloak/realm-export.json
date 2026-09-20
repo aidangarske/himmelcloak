@@ -1,5 +1,32 @@
 {
-  "_comment": "Placeholder. Replace with a real export from the pinned Keycloak, seeded with ONE test user per auth method (password, TOTP, WebAuthn, X.509, recovery) plus a client configured for the flows himmelcloak drives.",
   "realm": "himmelcloak-test",
-  "enabled": true
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "clients": [
+    {
+      "clientId": "himmelcloak-test-client",
+      "name": "Himmelcloak integration tests",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://127.0.0.1:8845/himmelcloak/callback"],
+      "webOrigins": ["http://127.0.0.1:8845"]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Test",
+      "email": "alice@example.invalid",
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false}
+      ]
+    }
+  ]
 }
