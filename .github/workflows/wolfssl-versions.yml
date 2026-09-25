@@ -1,18 +1,17 @@
-name: wolfSSL Version Matrix
+name: wolfSSL and curl compatibility
 
-# Auto dependency test. Builds wolfSSL at latest -stable and at master (resolved at run time) and
-# builds + tests himmelcloak against each, so upstream wolfSSL drift is caught here, not by a user.
+# Keep the fixed baseline reproducible while detecting upstream drift in
+# wolfSSL and curl without manually updating version strings.
 on:
   push:
-    branches: ['main', 'release/**']
+    branches: ['main', 'core', 'release/**']
   pull_request:
-    branches: ['*']
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * 1' # weekly, catches master drift even without a PR
+    - cron: '0 6 * * 1'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: native-versions-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -23,52 +22,32 @@ jobs:
     uses: ./.github/workflows/_resolve-wolfssl.yml
 
   test:
-    name: wolfSSL ${{ matrix.wolfssl-version }}
+    name: ${{ matrix.name }}
     needs: resolve
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool
-
-      # Cache stable only. master must always rebuild to catch regressions.
-      - name: Cache wolfSSL (${{ matrix.wolfssl-version }})
-        if: matrix.wolfssl-version != 'master'
-        id: cache-wolfssl
-        uses: actions/cache@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          path: ~/wolfssl-install
-          key: wolfssl-${{ matrix.wolfssl-version }}-v1
-
-      - name: Build wolfSSL (${{ matrix.wolfssl-version }})
-        if: matrix.wolfssl-version == 'master' || steps.cache-wolfssl.outputs.cache-hit != 'true'
+          context: .
+          file: tests/build/Dockerfile
+          load: true
+          tags: himmelcloak-tester:ci
+          build-args: |
+            WOLFSSL_REF=${{ matrix.wolfssl-ref }}
+            WOLFSSL_COMMIT=${{ matrix.wolfssl-commit }}
+            CURL_REF=${{ matrix.curl-ref }}
+            CURL_COMMIT=${{ matrix.curl-commit }}
+      - name: Show resolved versions
         run: |
-          cd ~
-          git clone --depth 1 --branch ${{ matrix.wolfssl-ref }} https://github.com/wolfSSL/wolfssl.git
-          cd wolfssl
-          ./autogen.sh
-          ./configure --enable-all --prefix=$HOME/wolfssl-install
-          make -j"$(nproc)"
-          make install
-
-      - name: Build + test himmelcloak against wolfSSL ${{ matrix.wolfssl-version }}
+          docker run --rm himmelcloak-tester:ci cat /opt/himmelcloak-native/.himmelcloak-refs
+          docker run --rm himmelcloak-tester:ci sh -c 'grep LIBWOLFSSL_VERSION_STRING /opt/himmelcloak-native/include/wolfssl/version.h; /opt/himmelcloak-native/bin/curl-config --version; /opt/himmelcloak-native/bin/curl-config --ssl-backends'
+      - name: Build all features and run unit tests
         run: |
-          export WOLFSSL_DIR=$HOME/wolfssl-install
-          export LD_LIBRARY_PATH=$WOLFSSL_DIR/lib
-          # himmelcloak links wolfSSL / wolfCrypt once the crypto layer is wired (see
-          # docs Crypto-and-Hardware). Pass the wolf features + WOLFSSL_DIR here as they land.
-          cargo build --workspace --all-features
-          cargo test --workspace
-
-      - name: wolfSSL version info
-        if: always()
-        run: |
-          if [ -f "$HOME/wolfssl-install/include/wolfssl/version.h" ]; then
-            grep LIBWOLFSSL_VERSION_STRING "$HOME/wolfssl-install/include/wolfssl/version.h" || true
-          fi
+          docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci cargo build --locked --all-features
+          docker run --rm -v "$PWD:/work" -v himmelcloak-cargo-target:/tmp/himmelcloak-target -e CARGO_TARGET_DIR=/tmp/himmelcloak-target -w /work himmelcloak-tester:ci cargo test --locked --lib

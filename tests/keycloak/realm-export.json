@@ -1,0 +1,34 @@
+{
+  "realm": "himmelcloak-test",
+  "enabled": true,
+  "sslRequired": "all",
+  "registrationAllowed": false,
+  "eventsEnabled": true,
+  "eventsListeners": ["jboss-logging"],
+  "clients": [
+    {
+      "clientId": "himmelcloak-test-client",
+      "name": "Himmelcloak integration tests",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://127.0.0.1:8845/himmelcloak/callback"],
+      "webOrigins": ["http://127.0.0.1:8845"]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Test",
+      "email": "alice@example.invalid",
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false}
+      ]
+    }
+  ]
+}

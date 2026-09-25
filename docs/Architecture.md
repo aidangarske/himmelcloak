@@ -1,101 +1,96 @@
 # Architecture
 
-## Layers
+Himmelcloak is a standalone Rust client for stock Keycloak. Applications call
+its public API directly; the library owns the Keycloak protocol and token
+validation.
 
-    himmelblau (PAM, NSS, daemon)   OS integration, defines the IdProvider trait
-            consumes
-    himmelcloak (this library)      native Keycloak auth, the typed state machine
-            talks OIDC and HTTP to
-    Keycloak (self-hosted)
+```mermaid
+flowchart LR
+    APP[Linux application] --> API[Himmelcloak API]
+    API --> OIDC[OIDC core]
+    API -. planned .-> FLOW[Native login flow]
+    OIDC --> HTTP[libcurl + wolfSSL] --> KC[Stock Keycloak]
+    OIDC --> CRYPTO[wolfCrypt]
+    FLOW -.-> HTTP
+```
 
-himmelcloak is standalone: no dependency on himmelblau or libhimmelblau. himmelblau consumes it
-through the `himmelcloak-himmelblau` adapter, which implements himmelblau's `IdProvider` trait by
-driving the state machine. This mirrors okta-auth-rs, a standalone crate himmelblau also consumes.
+## Current baseline
 
-## Why a native driver
+The implemented fast path discovers OIDC metadata and signing keys, performs a
+Direct Access Grant with a username, password, and optional TOTP value, and
+verifies the returned ID token before exposing it to callers. It also supports
+refresh, revocation, and userinfo. TLS peer and hostname verification are
+required. The runtime checks that libcurl is using the wolfSSL backend.
 
-Keycloak's only machine surface is the OIDC token endpoint, which covers password, TOTP, and X.509
-over the direct-grant flow. Everything else (WebAuthn and passkeys, recovery codes, required
-actions) is browser-flow only, and no existing crate closes that gap. himmelcloak drives those
-browser-only flows over HTTP in pure Rust, with no browser and nothing installed on the customer's
-Keycloak.
+The public client accepts a Keycloak base URL, realm, and public client ID.
+Direct Access Grants must be enabled for that client. A real Keycloak container
+with an imported test realm exercises this path in CI. Direct grant is an
+optional Keycloak configuration, so it cannot serve as the only login path.
 
-## Public contract
+## Native flow driver
 
-    let app = PublicClientApplication::new(issuer, realm, client_id).await?;
+The next core component will initiate Keycloak's authorization-code flow with
+PKCE, preserve its session cookies, classify the returned challenge, accept a
+typed answer, and exchange the final code for tokens. The caller owns the user
+conversation; the library owns protocol state and response validation. The
+existing `AuthFlow`, `Challenge`, `Answer`, and `AuthStep` types reserve this
+API shape, but `initiate_auth_flow` and `continue_auth_flow` currently return
+`NotImplemented`.
 
-    // Direct-grant fast path, when the realm allows it.
-    let tokens = app.acquire_token_by_password(user, pass, totp).await?;
+For WebAuthn, the intended adapter builds client data for Keycloak's actual
+origin and sends the signing request to a caller-provided authenticator. The
+flow must preserve WebAuthn origin checks and use an explicit adapter contract
+for USB, platform, and virtual test authenticators. Page parsing and theme
+compatibility require tests against real Keycloak releases; custom-theme
+independence is a design goal, not a current guarantee.
 
-    // Universal flow driver.
-    let (mut flow, mut step) = app.initiate_auth_flow(Start::default()).await?;
-    loop {
-        match step {
-            AuthStep::Challenge(c) => {
-                let answer = present_to_user(c);
-                step = app.continue_auth_flow(&mut flow, answer).await?;
-            }
-            AuthStep::Complete(tokens) => break,
-        }
-    }
+## Planned authentication methods
 
-`AuthStep` is `Challenge(Challenge)` or `Complete(Tokens)`; `Challenge` and `Answer` are typed per
-factor. `AuthFlow` is the resumable, serializable continue-state, so a daemon can persist it
-between prompts. Vocabulary matches okta-auth-rs (initiate / continue).
-
-## The flow driver
-
-The universal engine walks Keycloak's browser-flow endpoints over HTTP. For WebAuthn it GETs the
-auth endpoint, posts the username, extracts the PublicKeyCredentialRequestOptions, builds
-`clientDataJSON` with the real Keycloak origin, hands the hash to a caller-owned `WebAuthnAdapter`
-for CTAP2 signing, posts the assertion, then exchanges the returned code with PKCE and verifies the
-id token. Building `clientDataJSON` with the true origin preserves WebAuthn phishing resistance.
-
-## Theme independence
-
-Pages are classified by Keycloak core field names, never by visible text: `password`, `otp`,
-`clientDataJSON` / `authenticatorData` / `signature`, `recoveryCodeInput`, and the `kc_action`
-marker. Custom themes therefore do not break the driver; only a Keycloak core change can, which the
-CI version matrix catches.
-
-## Auth method matrix
-
-| Method | Mechanism | Feature |
+| Method | Intended mechanism | Current status |
 | --- | --- | --- |
-| Password | direct grant or flow driver | `password` |
-| TOTP / HOTP | direct grant or flow driver | `totp` |
-| WebAuthn / passkeys / FIDO | flow driver plus adapter | `webauthn`, `webauthn-usb` |
-| SMS / email OTP | flow driver | `sms`, `email` |
-| Recovery codes | flow driver | `recovery` |
-| X.509 / PIV / CAC | mTLS, direct grant or flow driver | `x509` |
-| Required actions | flow driver | `required-actions` |
-| Device flow | token endpoint | `device-flow` |
+| Password | Direct Access Grant; later native flow | Direct grant implemented |
+| TOTP | Direct Access Grant; later native flow | Optional direct-grant field implemented; live TOTP fixture pending |
+| WebAuthn / passkeys | Native flow and authenticator adapter | Planned |
+| SMS / email OTP | Native flow | Planned |
+| Recovery codes | Native flow | Planned |
+| X.509 / PIV / CAC | Mutual TLS and Keycloak flow | Planned |
+| Required actions | Native flow | Planned |
+| Device authorization | OIDC device endpoint | Planned |
 
-## Feature graph
+Feature flags for later methods reserve the additive feature graph. They do
+not yet imply that those methods work. The default flags are `password` and
+`totp`: disabling `password` disables the direct grant, and disabling `totp`
+rejects its OTP parameter. Cargo features are additive; use
+`--no-default-features --features gov` or
+`--no-default-features --features passwordless` to omit password support.
 
-Additive only: a feature adds behavior, never removes API, and everything compiles alone and under
-`--all-features`. Defaults are `password`, `totp`, `webauthn`, `webauthn-usb`. Method, transport,
-crypto, hardware, and COSE features are independent compile-time toggles; when two backends could
-both be enabled, selection is at run time.
+## Crypto and hardware boundaries
 
-## Crypto and hardware
+The official `wolfssl-wolfcrypt` crate supplies the cryptographic primitives
+used by the core. The Rust `curl` crate drives libcurl, built with wolfSSL as
+its TLS backend. The native build pins wolfSSL v5.9.2-stable. Future optional
+modules can add wolfTPM, wolfHSM, wolfPKCS11, and wolfCOSE without coupling the
+baseline OIDC client to those devices.
 
-| Component | Role |
-| --- | --- |
-| wolfCrypt | primitives: SHA-256, PKCE, HKDF, AEAD, JWT and WebAuthn verification |
-| wolfSSL | TLS to Keycloak |
-| wolfTPM | optional TPM key custody and platform authenticator |
-| wolfHSM | optional HSM key custody |
-| wolfPKCS11 | PIV / CAC smartcard certificates |
-| wolfCOSE | optional WebAuthn COSE_Key and attestation |
+A shared limit allows up to 32 concurrent libcurl transfers per process.
+Cancelling a queued request releases its slot; a running libcurl transfer
+keeps its slot until it exits.
 
-Hardware backends are additive and off by default. Enabling a wolfTPM, wolfHSM, or wolfCOSE feature
-pulls a GPL-3.0-or-later dependency, so that build is GPL-3.0; the core crate stays LGPL dual when
-those features are off.
+Request bodies are streamed from zeroizing Rust buffers into libcurl. libcurl
+may still hold transient copies of sent bytes, and its HTTP header list copies
+bearer tokens into native memory. Rust buffer cleanup cannot erase those native
+copies. Treat process memory and core dumps as sensitive while the client is
+running.
 
-## Testing
+The source is dual-licensed; the default combined build links GPL wolfSSL
+components. See [Licensing](Licensing.md) for the distribution implications.
 
-A real Keycloak in Docker is the oracle and CI target; himmelcloak ships no Java. A seeded realm
-carries one test user per method. The transport is a trait, so unit tests inject recorded HTTP
-fixtures and run offline, and WebAuthn runs headlessly through a software authenticator. A CI
-version matrix runs the suite across several Keycloak versions.
+## Test contract
+
+Every completed method needs a live test against an unmodified Keycloak
+container. CI resolves the latest stable release and `nightly` image digests,
+then runs the same integration suite against both.
+Unit tests cover token validation and transport boundaries without a server.
+The live suite will grow to cover authorization-code login, WebAuthn through a
+virtual authenticator, recovery, and each new factor as those implementations
+land. See [Testing](Testing.md).
