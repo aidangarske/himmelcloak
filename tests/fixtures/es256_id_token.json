@@ -1,0 +1,16 @@
+{
+  "jwk": {
+    "keys": [
+      {
+        "kty": "EC",
+        "kid": "ec-fixture",
+        "use": "sig",
+        "alg": "ES256",
+        "crv": "P-256",
+        "x": "stGES-Ln53uwR8Peza5tRVwpUG5S2nAPQfwOP-nwXYw",
+        "y": "un2_WFxeNT5-ZzJpHeQpGVWLrxWAma285LZ1ncNgu5Y"
+      }
+    ]
+  },
+  "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImVjLWZpeHR1cmUiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL2V4YW1wbGUudGVzdC9yZWFsbXMvdGVzdCIsImF1ZCI6ImNsaWVudCIsInN1YiI6ImFsaWNlIiwiZXhwIjo0MTAyNDQ0ODAwLCJpYXQiOjE3MDAwMDAwMDB9.0mRCRachMxjw_CCmKTWN5SXZ9MCkuus6_nsMUPU5izVFXg-mTuxp6g9o--69hY0V5PPYwA2eCKAk9XkQlTeY2w"
+}
