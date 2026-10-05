@@ -1,5 +1,5 @@
 # Himmelcloak native Keycloak authentication
-# SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Print only the Keycloak login event fields needed for the test trace.
 # Session and token identifiers from the raw server log are omitted.
 function value(line, key, parts, quoted) {

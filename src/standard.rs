@@ -1,6 +1,6 @@
 /*
  * Himmelcloak native Keycloak authentication
- * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 use serde_json::Value;
 use url::Url;

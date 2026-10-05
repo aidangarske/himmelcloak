@@ -1,6 +1,6 @@
 /*
  * Himmelcloak native Keycloak authentication
- * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! Terminal MFA demo. Run: `cargo run --example terminal_login`.
 //! Will drive `initiate_auth_flow` / `continue_auth_flow` against the Keycloak oracle, printing

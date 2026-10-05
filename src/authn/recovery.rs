@@ -1,6 +1,6 @@
 /*
  * Himmelcloak native Keycloak authentication
- * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! Recovery codes factor. Feature: `recovery`.
 //! Keycloak `recovery-authn-codes` authenticator: the page names the code index; POST the code in

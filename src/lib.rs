@@ -1,6 +1,6 @@
 /*
  * Himmelcloak native Keycloak authentication
- * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! himmelcloak, native, no-browser authentication against Keycloak.
 //!

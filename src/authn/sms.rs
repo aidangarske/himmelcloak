@@ -1,6 +1,6 @@
 /*
  * Himmelcloak native Keycloak authentication
- * SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! SMS OTP factor. Feature: `sms`.
 //! NOTE: SMS is NOT in core Keycloak, it is always a third-party/custom authenticator SPI, so
