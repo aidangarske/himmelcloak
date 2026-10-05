@@ -11,10 +11,16 @@ claimed to be FIPS validated.
 `cargo deny check licenses` runs in CI and fails the build if a dependency with an incompatible
 license is added.
 
+## Copyright
+
+The developers named below own the copyright in Himmelcloak, as the project charter states. Every
+source file carries this notice.
+
 ## Notice
 
     himmelcloak, native Keycloak authentication for Linux
-    Copyright (C) 2026 The himmelcloak contributors
+    Copyright (C) 2026 Damon Bun, Joshua Conklin, Kevin Torrecampo,
+    Aidan Garske, Harrison Barrett, and Harman Samra
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
