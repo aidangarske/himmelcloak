@@ -8,8 +8,8 @@ wrapper and wolfSSL C library (and optionally wolfTPM), so the combined work mus
 under the GPL. Hardware features may add further licensing obligations. No ordinary build is
 claimed to be FIPS validated.
 
-`cargo deny check licenses` runs in CI and fails the build if a dependency with an incompatible
-license is added.
+A `cargo deny check licenses` CI gate is planned to fail the build if a dependency with an
+incompatible license is added.
 
 ## Copyright
 
