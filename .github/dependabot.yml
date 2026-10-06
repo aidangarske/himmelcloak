@@ -2,11 +2,13 @@ version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
-    target-branch: core
     schedule:
       interval: weekly
+    ignore:
+      # wolfssl-wolfcrypt implements the signature 2.x traits; move with it, not ahead of it.
+      - dependency-name: signature
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
-    target-branch: core
     schedule:
       interval: weekly
