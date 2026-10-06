@@ -16,27 +16,10 @@ official `wolfssl-wolfcrypt` Rust crate.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph LINUX[Linux callers]
-        APP[Applications]
-        LOGIN[Himmelcloak PAM / SSH<br/>planned]
-    end
-
-    subgraph CORE[Himmelcloak]
-        API[PublicClientApplication]
-        OIDC[OIDC core<br/>discovery, grants, JWKS, userinfo]
-        FLOW[Native challenge flow<br/>planned]
-    end
-
-    APP --> API
-    LOGIN -.-> API
-    API --> OIDC
-    API -.-> FLOW
-    OIDC --> HTTP[libcurl + wolfSSL] --> KC[Stock Keycloak]
-    OIDC --> CRYPTO[wolfCrypt<br/>token verification]
-    FLOW -.-> HTTP
-```
+![Himmelcloak architecture: Linux applications call PublicClientApplication,
+which uses the OIDC core, libcurl with wolfSSL, stock Keycloak, and wolfCrypt
+for token verification. Dashed arrows mark the planned PAM/SSH integration
+and native challenge flow.](docs/assets/architecture.svg)
 
 See [Architecture](docs/Architecture.md) for the current implementation and
 planned native login flow.
