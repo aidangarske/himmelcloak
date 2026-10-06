@@ -4,15 +4,10 @@ Himmelcloak is a standalone Rust client for stock Keycloak. Applications call
 its public API directly; the library owns the Keycloak protocol and token
 validation.
 
-```mermaid
-flowchart LR
-    APP[Linux application] --> API[Himmelcloak API]
-    API --> OIDC[OIDC core]
-    API -. planned .-> FLOW[Native login flow]
-    OIDC --> HTTP[libcurl + wolfSSL] --> KC[Stock Keycloak]
-    OIDC --> CRYPTO[wolfCrypt]
-    FLOW -.-> HTTP
-```
+![Himmelcloak architecture: Linux applications call PublicClientApplication,
+which uses the OIDC core, libcurl with wolfSSL, stock Keycloak, and wolfCrypt
+for token verification. Dashed arrows mark the planned PAM/SSH integration
+and native challenge flow.](assets/architecture.svg)
 
 ## Current baseline
 

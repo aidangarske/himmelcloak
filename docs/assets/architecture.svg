@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="490" viewBox="0 0 1180 490" role="img" aria-labelledby="title description">
+  <title id="title">Himmelcloak architecture</title>
+  <desc id="description">Linux applications call PublicClientApplication, which calls the OIDC core. The OIDC core connects to stock Keycloak through libcurl with wolfSSL and uses wolfCrypt for token verification. Dashed arrows show planned PAM and SSH integration, the native challenge flow, and its HTTP connection.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect width="1180" height="490" fill="#ffffff"/>
+  <g fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5">
+    <rect x="20" y="35" width="250" height="385" rx="12"/>
+    <rect x="310" y="35" width="460" height="385" rx="12"/>
+  </g>
+  <g fill="#0f172a" font-family="sans-serif" font-size="18" font-weight="bold">
+    <text x="40" y="67">Linux callers</text>
+    <text x="330" y="67">Himmelcloak</text>
+  </g>
+  <g fill="none" stroke="#475569" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)">
+    <path d="M 245 145 H 290 V 225 H 335"/>
+    <path d="M 515 225 H 535 V 160 H 555"/>
+    <path d="M 745 145 H 825"/>
+    <path d="M 985 145 H 1030"/>
+    <path d="M 650 210 V 250 H 920 V 300"/>
+    <g stroke-dasharray="7 5">
+      <path d="M 245 315 H 290 V 225 H 335"/>
+      <path d="M 515 225 H 535 V 335 H 555"/>
+      <path d="M 745 335 H 790 V 170 H 825"/>
+    </g>
+  </g>
+  <g fill="#eff6ff" stroke="#2563eb" stroke-width="1.5">
+    <rect x="45" y="110" width="200" height="70" rx="8"/>
+    <rect x="335" y="190" width="180" height="70" rx="8"/>
+    <rect x="555" y="110" width="190" height="100" rx="8"/>
+    <rect x="825" y="110" width="160" height="70" rx="8"/>
+    <rect x="1030" y="110" width="130" height="70" rx="8"/>
+    <rect x="825" y="300" width="190" height="80" rx="8"/>
+  </g>
+  <g fill="#f8fafc" stroke="#64748b" stroke-width="1.5" stroke-dasharray="7 5">
+    <rect x="45" y="270" width="200" height="90" rx="8"/>
+    <rect x="555" y="290" width="190" height="90" rx="8"/>
+  </g>
+  <g fill="#0f172a" font-family="sans-serif" font-size="16" text-anchor="middle">
+    <text x="145" y="151">Applications</text>
+    <text x="145" y="302">Himmelcloak PAM / SSH</text>
+    <text x="145" y="332" fill="#475569" font-size="14">planned</text>
+    <text x="425" y="231" font-size="13">PublicClientApplication</text>
+    <text x="650" y="140">OIDC core</text>
+    <text x="650" y="167" fill="#475569" font-size="14">discovery, grants, JWKS,</text>
+    <text x="650" y="190" fill="#475569" font-size="14">userinfo</text>
+    <text x="650" y="322">Native challenge flow</text>
+    <text x="650" y="352" fill="#475569" font-size="14">planned</text>
+    <text x="905" y="151">libcurl + wolfSSL</text>
+    <text x="1095" y="151">Stock Keycloak</text>
+    <text x="920" y="331">wolfCrypt</text>
+    <text x="920" y="357" fill="#475569" font-size="14">token verification</text>
+  </g>
+  <g fill="#475569" font-family="sans-serif" font-size="14">
+    <path d="M 40 457 H 85" stroke="#475569" stroke-width="2"/>
+    <text x="95" y="462">Implemented</text>
+    <path d="M 235 457 H 280" stroke="#475569" stroke-width="2" stroke-dasharray="7 5"/>
+    <text x="290" y="462">Planned</text>
+  </g>
+</svg>
