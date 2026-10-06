@@ -82,8 +82,8 @@ bearer tokens into native memory. Rust buffer cleanup cannot erase those native
 copies. Treat process memory and core dumps as sensitive while the client is
 running.
 
-The source is dual-licensed; the default combined build links GPL wolfSSL
-components. See [Licensing](Licensing.md) for the distribution implications.
+The source is licensed under GPL-3.0-or-later because it links GPL wolfSSL
+components. See [Licensing](Licensing.md) for details.
 
 ## Test contract
 

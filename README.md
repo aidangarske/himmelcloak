@@ -82,6 +82,5 @@ See [Contributing](CONTRIBUTING.md) to work on the project.
 
 ## License
 
-The repository's own source is [dual-licensed](LICENSE) under
-LGPL-3.0-or-later OR GPL-3.0-or-later. The default build links GPL wolfSSL
-components; see [Licensing](docs/Licensing.md) for the combined-build terms.
+Himmelcloak is licensed under the [GNU General Public License v3.0 or later](LICENSE)
+(GPL-3.0-or-later). See [Licensing](docs/Licensing.md) for why and for dependency terms.

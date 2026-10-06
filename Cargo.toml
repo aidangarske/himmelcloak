@@ -5,8 +5,15 @@ name = "himmelcloak"
 version = "0.0.0"
 edition = "2021"
 rust-version = "1.95"
-license = "LGPL-3.0-or-later OR GPL-3.0-or-later"
-authors = ["Aidan Garske <aidan@wolfssl.com>"]
+license = "GPL-3.0-or-later"
+authors = [
+  "Damon Bun",
+  "Joshua Conklin",
+  "Kevin Torrecampo",
+  "Aidan Garske",
+  "Harrison Barrett",
+  "Harman Samra",
+]
 repository = "https://github.com/aidangarske/himmelcloak"
 description = "Native Keycloak authentication for Linux applications."
 
