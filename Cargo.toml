@@ -1,7 +1,10 @@
 # Himmelcloak native Keycloak authentication for Linux.
 # See docs/README.md.
-[package]
-name = "himmelcloak"
+[workspace]
+members = ["pam_himmelcloak", "nss_himmelcloak"]
+resolver = "2"
+
+[workspace.package]
 version = "0.0.0"
 edition = "2021"
 rust-version = "1.95"
@@ -15,12 +18,24 @@ authors = [
   "Harman Samra",
 ]
 repository = "https://github.com/aidangarske/himmelcloak"
-description = "Native Keycloak authentication for Linux applications."
 
 # Enforced by `cargo clippy` in CI (not by `cargo build`).
-[lints.clippy]
+[workspace.lints.clippy]
 todo = "deny"
 unimplemented = "deny"
+
+[package]
+name = "himmelcloak"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Native Keycloak authentication for Linux applications."
+
+[lints]
+workspace = true
 
 [features]
 # Reserve the planned additive feature names. The OIDC core, wolfCrypt, and

@@ -2,7 +2,9 @@
 
 | Location | Purpose |
 | --- | --- |
-| `Cargo.toml` | Single crate manifest and feature flags |
+| `Cargo.toml` | Workspace manifest, plus the `himmelcloak` library crate and its feature flags |
+| `pam_himmelcloak/` | PAM module crate; builds `libpam_himmelcloak.so`, installed as `pam_himmelcloak.so` |
+| `nss_himmelcloak/` | NSS module crate; builds `libnss_himmelcloak.so`, installed as `libnss_himmelcloak.so.2` |
 | `LICENSE` | GNU General Public License version 3 text |
 | `CONTRIBUTING.md` | Contributor setup and pull request guidelines |
 | `src/` | Keycloak client and public API |
@@ -21,5 +23,5 @@
 
 The public client and flow types are owned by the core. Factor implementations attach through
 typed challenges and answers; they do not redefine the state machine.
-The current crate exposes a Rust API and has no C headers. Add an `include/`
-directory only if a C ABI becomes part of the project.
+The `himmelcloak` crate exposes a Rust API. The PAM and NSS crates build the `cdylib`
+modules that will export the C entry points Linux-PAM and glibc load; there are no C headers.
