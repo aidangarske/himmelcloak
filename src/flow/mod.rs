@@ -24,6 +24,7 @@
 //! into.
 pub mod classify;
 pub mod driver;
+pub(crate) mod fetch;
 
 use crate::authenticator::{WebAuthnAssertion, WebAuthnChallenge};
 use zeroize::Zeroize;
@@ -64,7 +65,8 @@ pub enum Answer {
 /// between caller prompts.
 #[derive(Default)]
 pub struct AuthFlow {
-    // Fields to fill.
+    /// Cookies for this login attempt only; wiped when the flow is dropped.
+    pub(crate) jar: fetch::CookieJar,
 }
 
 /// A Keycloak required action the user must satisfy (e.g. UPDATE_PASSWORD, CONFIGURE_TOTP).
