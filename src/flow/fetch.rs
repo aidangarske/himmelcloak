@@ -79,8 +79,9 @@ impl CookieJar {
         }
     }
 
-    /// Whether `url`'s origin holds a cookie named `name`. Never exposes the value.
-    pub fn contains(&self, url: &Url, name: &str) -> bool {
+    /// Test helper: whether `url`'s origin holds a cookie named `name`.
+    #[cfg(test)]
+    fn contains(&self, url: &Url, name: &str) -> bool {
         let origin = url.origin();
         self.origins
             .iter()
