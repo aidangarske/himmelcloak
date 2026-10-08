@@ -32,6 +32,13 @@ existing `AuthFlow`, `Challenge`, `Answer`, and `AuthStep` types reserve this
 API shape, but `initiate_auth_flow` and `continue_auth_flow` currently return
 `NotImplemented`.
 
+Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each
+`AuthFlow` owns its own cookie jar, which keeps libcurl's cookie lines per exact
+origin (scheme, host, and port), sends them only back to that origin, and is
+zeroized when the flow is dropped. Redirects are never followed: a fetch
+returns the resolved `Location` flagged same-origin or not, so the driver
+decides every hop and can deny an unexpected host.
+
 For WebAuthn, the intended adapter builds client data for Keycloak's actual
 origin and sends the signing request to a caller-provided authenticator. The
 flow must preserve WebAuthn origin checks and use an explicit adapter contract
