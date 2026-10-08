@@ -183,6 +183,42 @@ pub(crate) struct Redirect {
     pub location: Url,
     /// True when `location` has the requested URL's exact scheme, host, and port.
     pub same_origin: bool,
+    /// Which redirect it was; decides how a next request would be made.
+    pub kind: RedirectKind,
+}
+
+/// The redirect status codes `fetch` reports. Any other 3xx is rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RedirectKind {
+    /// 301
+    MovedPermanently,
+    /// 302
+    Found,
+    /// 303
+    SeeOther,
+    /// 307
+    TemporaryRedirect,
+    /// 308
+    PermanentRedirect,
+}
+
+impl RedirectKind {
+    fn from_status(status: u32) -> Option<Self> {
+        match status {
+            301 => Some(Self::MovedPermanently),
+            302 => Some(Self::Found),
+            303 => Some(Self::SeeOther),
+            307 => Some(Self::TemporaryRedirect),
+            308 => Some(Self::PermanentRedirect),
+            _ => None,
+        }
+    }
+
+    /// True when a next request must repeat the original method and body (307, 308).
+    /// After 301, 302, or 303 it continues as a GET without the form body, as browsers do.
+    pub fn repeats_request(self) -> bool {
+        matches!(self, Self::TemporaryRedirect | Self::PermanentRedirect)
+    }
 }
 
 impl Drop for Page {
@@ -213,6 +249,7 @@ impl fmt::Debug for Redirect {
         f.debug_struct("Redirect")
             .field("location", &Redacted(&self.location))
             .field("same_origin", &self.same_origin)
+            .field("kind", &self.kind)
             .finish()
     }
 }
@@ -271,20 +308,21 @@ async fn send(
     let mut response = transport.send(request).await?;
     // Keep cookies from redirects too: Keycloak sets its session cookies on the 302 after login.
     jar.replace(&url, &response.cookies);
+    if let Some(kind) = RedirectKind::from_status(response.status) {
+        let location = response
+            .header("Location")
+            .ok_or(Error::Protocol("redirect without Location"))?;
+        let location = url
+            .join(location)
+            .map_err(|_| Error::Protocol("invalid redirect Location"))?;
+        let same_origin = location.origin() == url.origin();
+        return Ok(Fetched::Redirect(Redirect {
+            location,
+            same_origin,
+            kind,
+        }));
+    }
     match response.status {
-        301 | 302 | 303 | 307 | 308 => {
-            let location = response
-                .header("Location")
-                .ok_or(Error::Protocol("redirect without Location"))?;
-            let location = url
-                .join(location)
-                .map_err(|_| Error::Protocol("invalid redirect Location"))?;
-            let same_origin = location.origin() == url.origin();
-            Ok(Fetched::Redirect(Redirect {
-                location,
-                same_origin,
-            }))
-        }
         status @ 300..=399 => Err(Error::HttpStatus(status)),
         status => Ok(Fetched::Page(Page {
             url,
@@ -308,7 +346,7 @@ mod tests {
 
     use url::Url;
 
-    use super::{get, post_form, CookieJar, Fetched, Page, Redirect};
+    use super::{get, post_form, CookieJar, Fetched, Page, Redirect, RedirectKind};
     use crate::error::{Error, Result};
     use crate::flow::AuthFlow;
     use crate::transport::{CurlTransport, HttpTransport, Request, Response};
@@ -520,6 +558,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_redirects_report_whether_the_request_must_be_repeated() {
+        for (status, kind, repeats) in [
+            (303, RedirectKind::SeeOther, false),
+            (307, RedirectKind::TemporaryRedirect, true),
+            (308, RedirectKind::PermanentRedirect, true),
+        ] {
+            let transport = FakeTransport::new(vec![Reply {
+                status,
+                location: Some("/realms/test/login-actions/authenticate?execution=next"),
+                set: vec![],
+            }]);
+            let mut jar = CookieJar::default();
+            let fetched = post_form(
+                &transport,
+                &mut jar,
+                kc("/realms/test/login-actions/authenticate"),
+                &[("password", "synthetic-password")],
+            )
+            .await
+            .unwrap();
+
+            let Fetched::Redirect(redirect) = fetched else {
+                panic!("expected a redirect for {status}");
+            };
+            assert_eq!(redirect.kind, kind);
+            assert_eq!(redirect.kind.repeats_request(), repeats);
+            assert_eq!(transport.seen().len(), 1, "{status} must not be followed");
+        }
+    }
+
+    #[tokio::test]
     async fn cookies_are_only_sent_to_their_exact_origin() {
         let transport = FakeTransport::new(vec![
             page(vec![cookie("AUTH_SESSION_ID", "synthetic-session")]),
@@ -618,6 +687,7 @@ mod tests {
         let redirect = Fetched::Redirect(Redirect {
             location: url("http://127.0.0.1:8845/callback?code=synthetic-code"),
             same_origin: false,
+            kind: RedirectKind::Found,
         });
         for text in [format!("{page:?}"), format!("{redirect:?}")] {
             assert!(!text.contains("synthetic"), "secret in {text}");
