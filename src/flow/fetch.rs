@@ -45,12 +45,20 @@ pub(crate) struct CookieJar {
 impl CookieJar {
     /// Lines to send with a request to `url`: only those its exact origin set.
     fn lines_for(&self, url: &Url) -> Vec<String> {
+        self.lines_at(url, unix_now())
+    }
+
+    /// `lines_for` at a given time. Expiry is checked again here because a flow can sit paused
+    /// between prompts long after the cookies arrived.
+    fn lines_at(&self, url: &Url, now: u64) -> Vec<String> {
         let origin = url.origin();
         self.origins
             .iter()
-            .find(|(owner, _)| *owner == origin)
-            .map(|(_, lines)| lines.clone())
-            .unwrap_or_default()
+            .filter(|(owner, _)| *owner == origin)
+            .flat_map(|(_, lines)| lines)
+            .filter(|line| unexpired(line, now))
+            .cloned()
+            .collect()
     }
 
     /// Replace the cookies of `url`'s origin with libcurl's list after a response.
@@ -58,12 +66,16 @@ impl CookieJar {
     /// libcurl returns its whole store: the lines we sent, plus new or updated ones, minus any
     /// it deleted. Replacing instead of merging therefore applies server-side deletions too.
     fn replace(&mut self, url: &Url, lines: &[String]) {
+        self.replace_at(url, lines, unix_now());
+    }
+
+    /// `replace` at a given time.
+    fn replace_at(&mut self, url: &Url, lines: &[String], now: u64) {
         let Some(host) = url.host_str() else {
             return;
         };
         // libcurl writes IPv6 hosts without the URL's brackets.
         let host = host.trim_start_matches('[').trim_end_matches(']');
-        let now = unix_now();
         let kept: Vec<String> = lines
             .iter()
             .filter(|line| usable(line, host, now))
@@ -82,11 +94,8 @@ impl CookieJar {
     /// Test helper: whether `url`'s origin holds a cookie named `name`.
     #[cfg(test)]
     fn contains(&self, url: &Url, name: &str) -> bool {
-        let origin = url.origin();
-        self.origins
+        self.lines_for(url)
             .iter()
-            .filter(|(owner, _)| *owner == origin)
-            .flat_map(|(_, lines)| lines)
             .any(|line| line.split('\t').nth(5) == Some(name))
     }
 }
@@ -114,16 +123,21 @@ impl fmt::Debug for CookieJar {
 /// Whether a libcurl cookie line is well formed, unexpired, and belongs to `host`.
 fn usable(line: &str, host: &str, now: u64) -> bool {
     let fields: Vec<&str> = line.split('\t').collect();
-    let [domain, _, _, _, expiry, name, _] = fields[..] else {
+    let [domain, _, _, _, _, name, _] = fields[..] else {
         return false;
     };
     let domain = domain.strip_prefix("#HttpOnly_").unwrap_or(domain);
     let domain = domain.strip_prefix('.').unwrap_or(domain);
-    let Ok(expiry) = expiry.parse::<u64>() else {
-        return false;
-    };
-    // Expiry zero marks a session cookie; any other past time means the server deleted it.
-    !name.is_empty() && (expiry == 0 || expiry > now) && domain_matches(host, domain)
+    !name.is_empty() && unexpired(line, now) && domain_matches(host, domain)
+}
+
+/// Whether a cookie line's expiry, in Unix seconds, has not passed at `now`.
+fn unexpired(line: &str, now: u64) -> bool {
+    // Expiry zero marks a session cookie; any other past time means it is no longer valid.
+    line.split('\t')
+        .nth(4)
+        .and_then(|expiry| expiry.parse::<u64>().ok())
+        .is_some_and(|expiry| expiry == 0 || expiry > now)
 }
 
 /// Whether `host` is `domain` or one of its subdomains, ignoring ASCII case.
@@ -549,6 +563,24 @@ mod tests {
         assert_eq!(values(&seen[1].1), ["synthetic-restart"]);
         assert!(seen[2].1.is_empty());
         assert!(!jar.contains(&url(KC), "KC_RESTART"));
+    }
+
+    #[test]
+    fn cookies_expire_while_a_login_waits() {
+        let mut jar = CookieJar::default();
+        jar.replace_at(
+            &url(KC),
+            &[line(
+                "keycloak.test",
+                "KC_RESTART",
+                "synthetic-restart",
+                1_000,
+            )],
+            900,
+        );
+        // No response arrives in between: the flow is paused waiting for the user.
+        assert_eq!(values(&jar.lines_at(&url(KC), 999)), ["synthetic-restart"]);
+        assert!(jar.lines_at(&url(KC), 1_000).is_empty());
     }
 
     #[test]
