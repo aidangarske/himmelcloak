@@ -27,7 +27,7 @@
 use core::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use url::{Origin, Url};
+use url::{Host, Origin, Url};
 use zeroize::Zeroize;
 
 use crate::error::{Error, Result};
@@ -295,13 +295,22 @@ pub(crate) async fn post_form(
     send(transport, jar, Request::form(url, fields)?).await
 }
 
+/// HTTPS only, even on loopback (charter §2.6.8). Test builds also accept loopback HTTP so the
+/// real-libcurl test can use a plain local server.
+fn allowed_scheme(url: &Url) -> bool {
+    url.scheme() == "https"
+        || (cfg!(test)
+            && url.scheme() == "http"
+            && matches!(url.host(), Some(Host::Ipv4(ip)) if ip.is_loopback()))
+}
+
 async fn send(
     transport: &dyn HttpTransport,
     jar: &mut CookieJar,
     mut request: Request,
 ) -> Result<Fetched> {
-    if !matches!(request.url.scheme(), "http" | "https") {
-        return Err(Error::Protocol("page URL must use HTTP or HTTPS"));
+    if !allowed_scheme(&request.url) {
+        return Err(Error::Protocol("page URL must use HTTPS"));
     }
     request.cookies = jar.lines_for(&request.url);
     let url = request.url.clone();
@@ -595,12 +604,11 @@ mod tests {
             page(vec![]),
             page(vec![]),
             page(vec![]),
-            page(vec![]),
         ]);
         let mut jar = CookieJar::default();
+        // Plain http to the same host is refused outright: see the HTTPS test below.
         for target in [
             KC,
-            "http://keycloak.test:8443",
             "https://keycloak.test:9443",
             "https://other.test:8443",
             KC,
@@ -609,10 +617,10 @@ mod tests {
         }
 
         let seen = transport.seen();
-        for (other_origin, cookies) in &seen[1..4] {
+        for (other_origin, cookies) in &seen[1..3] {
             assert!(cookies.is_empty(), "cookie leaked to {other_origin}");
         }
-        assert_eq!(values(&seen[4].1), ["synthetic-session"]);
+        assert_eq!(values(&seen[3].1), ["synthetic-session"]);
     }
 
     #[tokio::test]
@@ -709,16 +717,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_http_urls_are_rejected_before_sending() {
+    async fn only_https_urls_are_fetched() {
         let transport = FakeTransport::new(vec![]);
         let mut jar = CookieJar::default();
-        assert_eq!(
-            get(&transport, &mut jar, url("ftp://keycloak.test/"))
-                .await
-                .err(),
-            Some(Error::Protocol("page URL must use HTTP or HTTPS"))
+        jar.replace(&url(KC), &[cookie("AUTH_SESSION_ID", "synthetic-session")]);
+        for target in [
+            "http://keycloak.test:8443/realms/test/login",
+            "ftp://keycloak.test/",
+        ] {
+            assert_eq!(
+                get(&transport, &mut jar, url(target)).await.err(),
+                Some(Error::Protocol("page URL must use HTTPS")),
+                "{target} must be refused"
+            );
+        }
+        assert!(
+            transport.seen().is_empty(),
+            "nothing may be sent before the check"
         );
-        assert!(transport.seen().is_empty());
     }
 
     fn read_head(stream: &mut TcpStream) -> String {
