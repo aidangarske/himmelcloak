@@ -15,7 +15,7 @@ test: native
 	scripts/with-native.sh cargo test --locked --workspace --lib
 
 pam-smoke:
-	bash pam_himmelcloak/tests/pam-load-smoke.sh "$(CURDIR)"
+	bash crates/pam_himmelcloak/tests/pam-load-smoke.sh "$(CURDIR)"
 
 lint: native
 	scripts/with-native.sh cargo clippy --locked --workspace --all-targets --all-features -- -D warnings

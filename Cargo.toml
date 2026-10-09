@@ -1,7 +1,7 @@
 # Himmelcloak native Keycloak authentication for Linux.
 # See docs/README.md.
 [workspace]
-members = ["pam_himmelcloak", "nss_himmelcloak"]
+members = ["crates/pam_himmelcloak", "crates/nss_himmelcloak"]
 resolver = "2"
 
 [workspace.package]
