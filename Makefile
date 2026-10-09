@@ -1,4 +1,4 @@
-.PHONY: native build all-features test lint fmt oracle-up oracle-down test-live test-live-verbose docker-lint
+.PHONY: native build all-features test pam-smoke lint fmt oracle-up oracle-down test-live test-live-verbose docker-lint
 
 COMPOSE = docker compose -f tests/keycloak/docker-compose.yml
 
@@ -13,6 +13,9 @@ all-features: native
 
 test: native
 	scripts/with-native.sh cargo test --locked --workspace --lib
+
+pam-smoke:
+	bash pam_himmelcloak/tests/pam-load-smoke.sh "$(CURDIR)"
 
 lint: native
 	scripts/with-native.sh cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
