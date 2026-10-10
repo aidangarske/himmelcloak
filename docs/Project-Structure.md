@@ -3,8 +3,8 @@
 | Location | Purpose |
 | --- | --- |
 | `Cargo.toml` | Workspace manifest, plus the `himmelcloak` library crate and its feature flags |
-| `pam_himmelcloak/` | PAM module crate; builds `libpam_himmelcloak.so`, installed as `pam_himmelcloak.so` |
-| `nss_himmelcloak/` | NSS module crate; builds `libnss_himmelcloak.so`, installed as `libnss_himmelcloak.so.2` |
+| `crates/pam_himmelcloak/` | PAM module crate; builds `libpam_himmelcloak.so`, installed as `pam_himmelcloak.so` |
+| `crates/nss_himmelcloak/` | NSS module crate; builds `libnss_himmelcloak.so`, installed as `libnss_himmelcloak.so.2` |
 | `LICENSE` | GNU General Public License version 3 text |
 | `CONTRIBUTING.md` | Contributor setup and pull request guidelines |
 | `src/` | Keycloak client and public API |

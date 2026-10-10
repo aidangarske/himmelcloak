@@ -9,7 +9,7 @@ downloads. The Rust module and C application are built inside the same container
 no host C compiler or Linux-PAM development headers are required.
 
 Place `pam-load-smoke.sh` and `pam-load-smoke.c` together in
-`pam_himmelcloak/tests`. From the repository root, run:
+`crates/pam_himmelcloak/tests`. From the repository root, run:
 
 ```bash
 make pam-smoke

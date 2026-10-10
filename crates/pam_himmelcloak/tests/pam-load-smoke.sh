@@ -33,7 +33,7 @@ docker run --rm \
 
         task_test_dir="$(mktemp -d /tmp/himmelcloak-pam-s1.XXXXXX)"
         cc -std=c11 -Wall -Wextra -Werror \
-            /work/pam_himmelcloak/tests/pam-load-smoke.c \
+            /work/crates/pam_himmelcloak/tests/pam-load-smoke.c \
             -lpam -o "$task_test_dir/pam-load-smoke"
         cp -- "$CARGO_TARGET_DIR/debug/libpam_himmelcloak.so" \
             "$task_test_dir/pam_himmelcloak.so"

@@ -16,4 +16,4 @@ crate-type = ["cdylib"]
 workspace = true
 
 [dependencies]
-himmelcloak = { path = ".." }
+himmelcloak = { path = "../.." }
