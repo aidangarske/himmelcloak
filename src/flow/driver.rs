@@ -24,24 +24,283 @@
 //! Rust (no browser): GET the page, extract the core-defined form/challenge, POST the answer.
 //! Theme-independent, classification keys off core field names (see `classify`), never text.
 use core::fmt;
+use std::collections::VecDeque;
 
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::client::{PublicClientApplication, Start};
 use crate::error::{Error, Result};
-use crate::flow::fetch::Redirect;
-use crate::flow::{Answer, AuthFlow, AuthStep};
+use crate::flow::classify::PageKind;
+use crate::flow::factor::Factors;
+use crate::flow::fetch::{self, CookieJar, Fetched, Page, Redirect};
+use crate::flow::form::{self, Form};
+use crate::flow::{Answer, AuthFlow, AuthStep, Challenge};
 
-/// Fetch + classify the current step (the challenge to present, or completion).
-pub(crate) fn step(flow: &mut AuthFlow) -> Result<AuthStep> {
-    flow.ensure_active()?;
-    Err(Error::NotImplemented)
+/// Same-origin redirects followed between two pages before the login is refused.
+const MAX_REDIRECTS: usize = 5;
+
+/// The page waiting on the caller: its form, the challenge being answered, the challenges still
+/// to ask, and the answers so far.
+pub(crate) struct Pending {
+    kind: PageKind,
+    form: Form,
+    expect: Expect,
+    queue: VecDeque<Challenge>,
+    answers: Vec<Answer>,
 }
 
-/// Post the caller's answer to the current authenticator and advance.
-pub(crate) fn advance(flow: &mut AuthFlow, _answer: Answer) -> Result<AuthStep> {
+/// Start the login: fetch Keycloak's first page and return what it asks.
+pub(crate) async fn begin(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    start: &Start,
+    flow: &mut AuthFlow,
+) -> Result<AuthStep> {
+    let mut step = Step { flow, done: false };
+    let next = first_page(app, factors, start, step.flow).await;
+    step.done = next.is_ok();
+    next
+}
+
+/// Check the caller's answer against the waiting challenge, then ask the page's next challenge
+/// or post its form and move on.
+pub(crate) async fn advance(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    flow: &mut AuthFlow,
+    answer: Answer,
+) -> Result<AuthStep> {
+    let mut step = Step { flow, done: false };
+    let next = answer_page(app, factors, step.flow, answer).await;
+    step.done = next.is_ok();
+    next
+}
+
+/// Fails the login unless the step succeeds. A step that errors or is dropped mid-request leaves
+/// Keycloak's side of the login unknown, so it cannot be resumed.
+struct Step<'a> {
+    flow: &'a mut AuthFlow,
+    done: bool,
+}
+
+impl Drop for Step<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.flow.fail();
+        }
+    }
+}
+
+async fn first_page(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    start: &Start,
+    flow: &mut AuthFlow,
+) -> Result<AuthStep> {
+    let url = app.authorization_url(start, flow)?;
+    flow.client = app.login_client();
+    flow.login_hint = start.login_hint.clone();
+    let fetched = fetch::get(app.transport(), &mut flow.jar, url).await?;
+    resolve(app, factors, flow, fetched, false).await
+}
+
+async fn answer_page(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    flow: &mut AuthFlow,
+    answer: Answer,
+) -> Result<AuthStep> {
     flow.ensure_active()?;
-    Err(Error::NotImplemented)
+    let mut pending = flow
+        .pending
+        .take()
+        .ok_or(Error::Protocol("no challenge is waiting for an answer"))?;
+    // Another client would get this login's code and PKCE verifier at its own token endpoint.
+    if flow.client != app.login_client() {
+        return Err(Error::Protocol("login flow belongs to another client"));
+    }
+    pending.expect.check(&answer)?;
+    pending.answers.push(answer);
+    if let Some(next) = pending.queue.pop_front() {
+        pending.expect = Expect::of(&next);
+        flow.pending = Some(pending);
+        return Ok(AuthStep::Challenge(next));
+    }
+    let fetched = post(app, factors, &mut flow.jar, pending).await?;
+    resolve(app, factors, flow, fetched, true).await
+}
+
+/// Post the page's form. Taking the page by value wipes its answers once the form is sent,
+/// before any redirect is followed or the code is redeemed.
+async fn post(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    jar: &mut CookieJar,
+    pending: Pending,
+) -> Result<Fetched> {
+    let factor = factors
+        .for_page(&pending.kind)
+        .ok_or(Error::UnsupportedFactor)?;
+    let fields = factor.fields(&pending.kind, &pending.answers)?;
+    let fields: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    pending.form.submit(app.transport(), jar, &fields).await
+}
+
+/// Turn Keycloak's response into the next step: a page's first challenge, or completion at the
+/// callback. Keycloak's own same-origin redirects are followed; any other redirect is refused.
+/// `posted` says `fetched` answers a form post rather than a GET.
+async fn resolve(
+    app: &PublicClientApplication,
+    factors: &dyn Factors,
+    flow: &mut AuthFlow,
+    mut fetched: Fetched,
+    mut posted: bool,
+) -> Result<AuthStep> {
+    let mut followed = 0;
+    loop {
+        // The response can land after the time limit; never act on one past it.
+        flow.ensure_active()?;
+        let redirect = match fetched {
+            Fetched::Page(page) => {
+                if page.status != 200 {
+                    return Err(Error::HttpStatus(page.status));
+                }
+                return present(factors, flow, &page);
+            }
+            Fetched::Redirect(redirect) => redirect,
+        };
+        // A 307 or 308 straight after a form post would repeat the post, even to the callback;
+        // after a GET it is a GET.
+        if posted && redirect.kind.repeats_request() {
+            return Err(Error::Protocol("unexpected redirect"));
+        }
+        if let Some(complete) = app.complete_at_callback(&redirect, flow).await? {
+            return Ok(complete);
+        }
+        if !redirect.same_origin {
+            return Err(Error::Protocol("unexpected redirect"));
+        }
+        if followed == MAX_REDIRECTS {
+            return Err(Error::Protocol("too many redirects"));
+        }
+        followed += 1;
+        posted = false;
+        fetched = fetch::get(app.transport(), &mut flow.jar, redirect.location.clone()).await?;
+    }
+}
+
+/// Hand the page to its factor and return the page's first challenge.
+fn present(factors: &dyn Factors, flow: &mut AuthFlow, page: &Page) -> Result<AuthStep> {
+    let (kind, form) = form::extract(page)?;
+    let factor = factors.for_page(&kind).ok_or(Error::UnsupportedFactor)?;
+    let mut queue = VecDeque::from(factor.challenges(&kind, flow.login_hint.as_deref())?);
+    let first = queue
+        .pop_front()
+        .ok_or(Error::Protocol("page asks no challenge"))?;
+    flow.pending = Some(Pending {
+        kind,
+        form,
+        expect: Expect::of(&first),
+        queue,
+        answers: Vec::new(),
+    });
+    Ok(AuthStep::Challenge(first))
+}
+
+/// What the waiting challenge accepts, kept because the `Challenge` itself goes to the caller.
+enum Expect {
+    Username,
+    Password,
+    OneTimeCode { devices: Vec<String> },
+    RecoveryCode,
+    WebAuthn { allowed: Vec<Vec<u8>> },
+    ChooseMethod { methods: Vec<String> },
+    RequiredAction { fields: Vec<String> },
+    Info,
+}
+
+impl Expect {
+    fn of(challenge: &Challenge) -> Self {
+        match challenge {
+            Challenge::Username => Self::Username,
+            Challenge::Password => Self::Password,
+            Challenge::OneTimeCode { devices } => Self::OneTimeCode {
+                devices: devices.iter().map(|device| device.id.clone()).collect(),
+            },
+            Challenge::RecoveryCode { .. } => Self::RecoveryCode,
+            Challenge::WebAuthn(request) => Self::WebAuthn {
+                allowed: request
+                    .allow_credentials
+                    .iter()
+                    .map(|credential| credential.id.clone())
+                    .collect(),
+            },
+            Challenge::ChooseMethod { methods } => Self::ChooseMethod {
+                methods: methods.iter().map(|method| method.id.clone()).collect(),
+            },
+            Challenge::RequiredAction(action) => Self::RequiredAction {
+                fields: action
+                    .fields
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect(),
+            },
+            Challenge::Info { .. } => Self::Info,
+        }
+    }
+
+    /// Refuse an answer the waiting challenge did not ask for, before anything is sent.
+    fn check(&self, answer: &Answer) -> Result<()> {
+        let mismatch = Error::Protocol("answer does not match the challenge");
+        match (self, answer) {
+            (Self::Username, Answer::Username(_))
+            | (Self::Password, Answer::Password(_))
+            | (Self::RecoveryCode, Answer::RecoveryCode(_))
+            | (Self::Info, Answer::Acknowledge) => Ok(()),
+            // With one device the page offers no choice; with several, the caller must pick one.
+            (Self::OneTimeCode { devices }, Answer::OneTimeCode { device, .. }) => match device {
+                None if devices.is_empty() => Ok(()),
+                None => Err(mismatch),
+                Some(device) if devices.contains(device) => Ok(()),
+                Some(_) => Err(Error::Protocol("device not offered by the page")),
+            },
+            // An empty allow-list lets the authenticator choose a discoverable credential.
+            (Self::WebAuthn { allowed }, Answer::WebAuthn(assertion)) => {
+                if allowed.is_empty() || allowed.contains(&assertion.credential_id) {
+                    Ok(())
+                } else {
+                    Err(Error::Protocol("credential not allowed"))
+                }
+            }
+            (Self::ChooseMethod { methods }, Answer::ChooseMethod(method)) => {
+                if methods.contains(method) {
+                    Ok(())
+                } else {
+                    Err(Error::Protocol("method not offered"))
+                }
+            }
+            (Self::RequiredAction { fields }, Answer::RequiredAction(given)) => {
+                let answered_once = |field: &String| {
+                    given
+                        .values
+                        .iter()
+                        .filter(|(name, _)| name == field)
+                        .count()
+                        == 1
+                };
+                if given.values.len() == fields.len() && fields.iter().all(answered_once) {
+                    Ok(())
+                } else {
+                    Err(Error::Protocol("answer does not match the required action"))
+                }
+            }
+            _ => Err(mismatch),
+        }
+    }
 }
 
 /// The authorization code from Keycloak's final redirect to the registered callback, after its
@@ -140,10 +399,16 @@ mod tests {
 
     use url::Url;
 
-    use super::{callback, Callback};
+    use super::{callback, Callback, Expect};
+    use crate::authenticator::{
+        CredentialDescriptor, UserVerification, WebAuthnAssertion, WebAuthnChallenge,
+    };
     use crate::error::{Error, Result};
     use crate::flow::fetch::{Redirect, RedirectKind};
-    use crate::flow::AuthFlow;
+    use crate::flow::{
+        Answer, AuthFlow, AuthMethod, Challenge, Field, OtpDevice, RequiredAction,
+        RequiredActionAnswer,
+    };
 
     const CALLBACK: &str = "http://127.0.0.1:8845/himmelcloak/callback";
 
@@ -303,5 +568,165 @@ mod tests {
             at_callback(&format!("code=c&state={state}"), &mut flow).err(),
             Some(Error::Expired)
         );
+    }
+
+    fn code(device: Option<&str>) -> Answer {
+        Answer::OneTimeCode {
+            code: "123456".to_owned(),
+            device: device.map(str::to_owned),
+        }
+    }
+
+    fn devices(ids: &[&str]) -> Challenge {
+        Challenge::OneTimeCode {
+            devices: ids
+                .iter()
+                .map(|id| OtpDevice::new((*id).to_owned(), "Phone".to_owned()))
+                .collect(),
+        }
+    }
+
+    fn webauthn(allowed: &[&[u8]]) -> Challenge {
+        Challenge::WebAuthn(WebAuthnChallenge {
+            rp_id: "keycloak.test".to_owned(),
+            challenge: vec![1, 2, 3],
+            allow_credentials: allowed
+                .iter()
+                .map(|id| CredentialDescriptor { id: id.to_vec() })
+                .collect(),
+            user_verification: UserVerification::Preferred,
+            origin: "https://keycloak.test:8443".to_owned(),
+        })
+    }
+
+    fn assertion(credential_id: &[u8]) -> Answer {
+        Answer::WebAuthn(WebAuthnAssertion {
+            authenticator_data: Vec::new(),
+            signature: Vec::new(),
+            credential_id: credential_id.to_vec(),
+            user_handle: None,
+        })
+    }
+
+    fn methods() -> Challenge {
+        Challenge::ChooseMethod {
+            methods: vec![AuthMethod::new(
+                "otp".to_owned(),
+                "Authenticator".to_owned(),
+            )],
+        }
+    }
+
+    fn update_password() -> Challenge {
+        let field = |name: &str| Field::new(name.to_owned(), name.to_owned(), true);
+        Challenge::RequiredAction(RequiredAction::new(
+            "UPDATE_PASSWORD".to_owned(),
+            None,
+            vec![field("password-new"), field("password-confirm")],
+        ))
+    }
+
+    fn filled(names: &[&str]) -> Answer {
+        Answer::RequiredAction(RequiredActionAnswer::new(
+            names
+                .iter()
+                .map(|name| ((*name).to_owned(), "new-secret".to_owned()))
+                .collect(),
+        ))
+    }
+
+    #[test]
+    fn every_answer_must_fit_its_challenge() {
+        let mismatch = Error::Protocol("answer does not match the challenge");
+        let wrong_device = Error::Protocol("device not offered by the page");
+        let wrong_fields = Error::Protocol("answer does not match the required action");
+        let cases = [
+            (
+                Challenge::Username,
+                Answer::Username("alice".to_owned()),
+                None,
+            ),
+            (Challenge::Password, Answer::Password("pw".to_owned()), None),
+            (
+                Challenge::RecoveryCode { index_hint: None },
+                Answer::RecoveryCode("recovery".to_owned()),
+                None,
+            ),
+            (
+                Challenge::Info {
+                    message: "Check your email".to_owned(),
+                },
+                Answer::Acknowledge,
+                None,
+            ),
+            (
+                Challenge::Password,
+                Answer::Acknowledge,
+                Some(mismatch.clone()),
+            ),
+            (
+                Challenge::Username,
+                Answer::Password("pw".to_owned()),
+                Some(mismatch.clone()),
+            ),
+            (devices(&[]), code(None), None),
+            (
+                devices(&[]),
+                code(Some("phone")),
+                Some(wrong_device.clone()),
+            ),
+            (devices(&["phone", "tablet"]), code(Some("tablet")), None),
+            (
+                devices(&["phone", "tablet"]),
+                code(Some("laptop")),
+                Some(wrong_device),
+            ),
+            (
+                devices(&["phone", "tablet"]),
+                code(None),
+                Some(mismatch.clone()),
+            ),
+            (webauthn(&[]), assertion(b"any-key"), None),
+            (webauthn(&[b"key"]), assertion(b"key"), None),
+            (
+                webauthn(&[b"key"]),
+                assertion(b"other-key"),
+                Some(Error::Protocol("credential not allowed")),
+            ),
+            (methods(), Answer::ChooseMethod("otp".to_owned()), None),
+            (
+                methods(),
+                Answer::ChooseMethod("sms".to_owned()),
+                Some(Error::Protocol("method not offered")),
+            ),
+            (
+                update_password(),
+                filled(&["password-confirm", "password-new"]),
+                None,
+            ),
+            (
+                update_password(),
+                filled(&["password-new"]),
+                Some(wrong_fields.clone()),
+            ),
+            (
+                update_password(),
+                filled(&["password-new", "password-new"]),
+                Some(wrong_fields.clone()),
+            ),
+            (
+                update_password(),
+                filled(&["password-new", "password-confirm", "username"]),
+                Some(wrong_fields),
+            ),
+            (update_password(), Answer::Acknowledge, Some(mismatch)),
+        ];
+        for (i, (challenge, answer, expected)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                Expect::of(&challenge).check(&answer).err(),
+                expected,
+                "case {i}"
+            );
+        }
     }
 }
