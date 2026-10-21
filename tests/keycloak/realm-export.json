@@ -5,6 +5,7 @@
   "registrationAllowed": false,
   "eventsEnabled": true,
   "eventsListeners": ["jboss-logging"],
+  "accessCodeLifespan": 10,
   "clients": [
     {
       "clientId": "himmelcloak-test-client",
