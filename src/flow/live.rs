@@ -25,7 +25,11 @@
 //! and the live suite runs them with `cargo test --lib --test live_keycloak -- --ignored`. They
 //! need `KEYCLOAK_URL` and `KEYCLOAK_CA`, like `tests/live_keycloak.rs`.
 use std::path::PathBuf;
+#[cfg(all(feature = "password", feature = "totp"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(all(feature = "password", feature = "totp"))]
+use crate::authn::totp::{totp, OtpAlgorithm};
 use crate::client::{PublicClientApplication, Start};
 use crate::config::Config;
 use crate::error::Error;
@@ -36,6 +40,10 @@ use crate::flow::{driver, AuthFlow, DEFAULT_LOGIN_TIMEOUT};
 use crate::transport::CurlTransport;
 
 const PASSWORD: &str = "correct-horse-battery-staple";
+#[cfg(all(feature = "password", feature = "totp"))]
+const TOTP_SHA1_SECRET: &[u8] = b"12345678901234567890";
+#[cfg(all(feature = "password", feature = "totp"))]
+const TOTP_SHA256_SECRET: &[u8] = b"12345678901234567890123456789012";
 /// The test realm's client with direct grants disabled, so these scenarios prove the
 /// browser-free flow works without the password grant (charter section 2.7.3).
 const BROWSER_ONLY_CLIENT: &str = "himmelcloak-browser-only";
@@ -46,12 +54,16 @@ fn trace(message: &str) {
     }
 }
 
-fn config() -> Config {
+fn config_for_client(client_id: &str) -> Config {
     let server = std::env::var("KEYCLOAK_URL").expect("KEYCLOAK_URL must be set for live tests");
     let ca = std::env::var("KEYCLOAK_CA").expect("KEYCLOAK_CA must be set for live tests");
-    let mut config = Config::new(&server, "himmelcloak-test", BROWSER_ONLY_CLIENT).unwrap();
+    let mut config = Config::new(&server, "himmelcloak-test", client_id).unwrap();
     config.ca_bundle = Some(PathBuf::from(ca));
     config
+}
+
+fn config() -> Config {
+    config_for_client(BROWSER_ONLY_CLIENT)
 }
 
 /// Start a login with `flow` and return the login page's form.
@@ -176,4 +188,36 @@ async fn live_code_exchange_returns_verified_tokens_and_a_wrong_code_is_rejected
         Some(Error::AuthenticationRejected)
     );
     trace("Keycloak rejected the wrong code");
+}
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+#[cfg(all(feature = "password", feature = "totp"))]
+async fn live_direct_grant_totp_accepts_fixture_users() {
+    let config = config_for_client("himmelcloak-test-client");
+    let app = PublicClientApplication::with_config(config).await.unwrap();
+
+    for (username, secret, algorithm, digits) in [
+        ("bob", TOTP_SHA1_SECRET, OtpAlgorithm::Sha1, 6),
+        ("carol", TOTP_SHA256_SECRET, OtpAlgorithm::Sha256, 8),
+    ] {
+        let unix_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after the Unix epoch")
+            .as_secs();
+        let code =
+            totp(secret, unix_time, 30, algorithm, digits).expect("valid fixture TOTP settings");
+
+        trace(&format!(
+            "send {username}'s current TOTP code through the password grant"
+        ));
+        let tokens = app
+            .acquire_token_by_password(username, PASSWORD, Some(code.as_str()))
+            .await
+            .unwrap();
+
+        assert!(tokens.id_token.is_some());
+        let user = app.userinfo(&tokens).await.unwrap();
+        assert_eq!(user["preferred_username"], username);
+        trace(&format!("Keycloak accepted {username}'s TOTP code"));
+    }
 }

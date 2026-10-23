@@ -29,7 +29,7 @@
       "webOrigins": ["http://127.0.0.1:8845"]
     }
   ],
-  "users": [
+    "users": [
     {
       "username": "alice",
       "enabled": true,
@@ -39,6 +39,46 @@
       "email": "alice@example.invalid",
       "credentials": [
         {"type": "password", "value": "correct-horse-battery-staple", "temporary": false}
+      ]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Fixture",
+      "email": "bob@example.invalid",
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false},
+        {
+          "type": "otp",
+          "userLabel": "Authenticator app",
+          "secretData": "{\"value\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\"}",
+          "credentialData": "{\"subType\":\"totp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\",\"secretEncoding\":\"BASE32\"}"
+        }
+      ]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Fixture",
+      "email": "carol@example.invalid",
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false},
+        {
+          "type": "otp",
+          "userLabel": "Authenticator app",
+          "secretData": "{\"value\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA====\"}",
+          "credentialData": "{\"subType\":\"totp\",\"digits\":8,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA256\",\"secretEncoding\":\"BASE32\"}"
+        },
+        {
+          "type": "otp",
+          "userLabel": "Hardware token",
+          "secretData": "{\"value\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\"}",
+          "credentialData": "{\"subType\":\"hotp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\",\"secretEncoding\":\"BASE32\"}"
+        }
       ]
     }
   ]
