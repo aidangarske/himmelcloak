@@ -64,3 +64,55 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{check_config, parse_command, Command};
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn parses_supported_commands() {
+        assert_eq!(
+            parse_command(&arguments(&["config", "check"])),
+            Ok(Command::ConfigCheck)
+        );
+        assert_eq!(
+            parse_command(&arguments(&["test-login"])),
+            Ok(Command::TestLogin)
+        );
+        assert_eq!(
+            parse_command(&arguments(&["sync-users"])),
+            Ok(Command::SyncUsers)
+        );
+        assert_eq!(
+            parse_command(&arguments(&["clear-state"])),
+            Ok(Command::ClearState)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_commands() {
+        assert!(parse_command(&arguments(&["unknown-command"])).is_err());
+    }
+
+    #[test]
+    fn config_check_accepts_valid_toml_and_rejects_malformed_toml() {
+        let path = std::env::temp_dir().join(format!(
+            "himmelcloak-cli-config-test-{}.toml",
+            std::process::id()
+        ));
+
+        fs::write(&path, "realm = \"himmelcloak-test\"\n").expect("write valid test config");
+        assert!(check_config(&path).is_ok());
+
+        fs::write(&path, "realm = [\n").expect("write malformed test config");
+        assert!(check_config(&path).is_err());
+
+        fs::remove_file(&path).expect("remove test config");
+    }
+}
