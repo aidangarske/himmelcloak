@@ -1,4 +1,6 @@
 use std::env;
+use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,14 +21,31 @@ fn parse_command(arguments: &[String]) -> Result<Command, &'static str> {
     }
 }
 
+fn parse_config(contents: &str) -> Result<(), toml::de::Error> {
+    toml::from_str::<toml::Value>(contents).map(|_| ())
+}
+
+fn check_config(path: &Path) -> Result<(), String> {
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+
+    parse_config(&contents).map_err(|error| format!("invalid {}: {error}", path.display()))
+}
+
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
 
     match parse_command(&arguments) {
-        Ok(Command::ConfigCheck) => {
-            println!("himmelcloak-cli: config check is not implemented yet");
-            ExitCode::SUCCESS
-        }
+        Ok(Command::ConfigCheck) => match check_config(Path::new("himmelcloak.toml")) {
+            Ok(()) => {
+                println!("himmelcloak-cli: himmelcloak.toml is valid");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("himmelcloak-cli: {message}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(Command::TestLogin) => {
             println!("himmelcloak-cli: test-login is not implemented yet");
             ExitCode::SUCCESS
