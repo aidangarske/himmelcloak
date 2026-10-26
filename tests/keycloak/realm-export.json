@@ -80,6 +80,23 @@
           "credentialData": "{\"subType\":\"hotp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\",\"secretEncoding\":\"BASE32\"}"
         }
       ]
+    },
+    {
+      "username": "dave",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Dave",
+      "lastName": "Fixture",
+      "email": "dave@example.invalid",
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false},
+        {
+          "type": "otp",
+          "userLabel": "Hardware token",
+          "secretData": "{\"value\":\"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\"}",
+          "credentialData": "{\"subType\":\"hotp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\",\"secretEncoding\":\"BASE32\"}"
+        }
+      ]
     }
   ]
 }

@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(all(feature = "password", feature = "totp"))]
-use crate::authn::totp::{totp, OtpAlgorithm};
+use crate::authn::totp::{hotp, totp, OtpAlgorithm};
 use crate::client::{PublicClientApplication, Start};
 use crate::config::Config;
 use crate::error::Error;
@@ -44,6 +44,8 @@ const PASSWORD: &str = "correct-horse-battery-staple";
 const TOTP_SHA1_SECRET: &[u8] = b"12345678901234567890";
 #[cfg(all(feature = "password", feature = "totp"))]
 const TOTP_SHA256_SECRET: &[u8] = b"12345678901234567890123456789012";
+#[cfg(all(feature = "password", feature = "totp"))]
+const HOTP_SHA1_SECRET: &[u8] = b"12345678901234567890";
 /// The test realm's client with direct grants disabled, so these scenarios prove the
 /// browser-free flow works without the password grant (charter section 2.7.3).
 const BROWSER_ONLY_CLIENT: &str = "himmelcloak-browser-only";
@@ -236,4 +238,37 @@ async fn live_direct_grant_totp_accepts_and_rejects_fixture_users() {
         assert_eq!(user["preferred_username"], username);
         trace(&format!("Keycloak accepted {username}'s TOTP code"));
     }
+}
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+#[cfg(all(feature = "password", feature = "totp"))]
+async fn live_direct_grant_hotp_accepts_and_rejects_fixture_user() {
+    let config = config_for_client("himmelcloak-test-client");
+    let app = PublicClientApplication::with_config(config).await.unwrap();
+
+    let code =
+        hotp(HOTP_SHA1_SECRET, 0, OtpAlgorithm::Sha1, 6).expect("valid fixture HOTP settings");
+    let wrong_code = format!(
+        "{:06}",
+        (code.parse::<u32>().expect("numeric OTP code") + 1) % 1_000_000
+    );
+
+    trace("reject an invalid HOTP code for dave");
+    assert_eq!(
+        app.acquire_token_by_password("dave", PASSWORD, Some(wrong_code.as_str()))
+            .await
+            .err(),
+        Some(Error::AuthenticationRejected)
+    );
+
+    trace("send dave's HOTP code through the password grant");
+    let tokens = app
+        .acquire_token_by_password("dave", PASSWORD, Some(code.as_str()))
+        .await
+        .unwrap();
+
+    assert!(tokens.id_token.is_some());
+    let user = app.userinfo(&tokens).await.unwrap();
+    assert_eq!(user["preferred_username"], "dave");
+    trace("Keycloak accepted dave's HOTP code");
 }
