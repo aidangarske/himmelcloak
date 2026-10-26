@@ -7,11 +7,12 @@ Docker network alias.
 
 The realm also contains disposable one-time-code fixture users. `bob` has a
 30-second, 6-digit SHA-1 TOTP credential. `carol` has an 8-digit SHA-256 TOTP
-credential and a SHA-1 HOTP hardware-token credential. Their fixed Base32 test
-secrets exist only for local and CI testing. The live suite generates current
-TOTP codes and verifies direct-grant login for both users. After changing
-`tests/keycloak/realm-export.json`, run `make test-live` to rebuild the
-temporary Keycloak realm.
+credential and a SHA-1 HOTP credential. `dave` has a SHA-1 HOTP-only credential
+so the live suite can exercise direct-grant HOTP login. Their fixed Base32 test
+secrets exist only for local and CI testing. The live suite verifies accepted
+and rejected TOTP codes for Bob and Carol, plus accepted and rejected HOTP codes
+for Dave. After changing `tests/keycloak/realm-export.json`, run
+`make test-live` to rebuild the temporary Keycloak realm.
 
 Run `make test-live` for the moving `latest` Keycloak image or set `KEYCLOAK_IMAGE` to another tag.
 Each local run recreates the Keycloak container so realm import uses the current fixture.
