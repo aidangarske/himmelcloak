@@ -70,5 +70,5 @@ Priority 2 factors are built, and `AuthFlow::default()` is gone because only
 client credentials and returns `Vec<GroupMember>` with `id`, `username`, and
 `enabled`. It reads only that group's members and returns no partial result on
 failure. This service-account API is separate from `PublicClientApplication`'s
-public-client login flow. See [NSS Sync](NSS-Sync.md) for permissions, pagination,
-root CLI usage, and the live fixture.
+public-client login flow. See [Group sync](Getting-Started.md#group-sync) for CLI configuration and
+[Group synchronization](Testing.md#group-synchronization) for the live fixture.

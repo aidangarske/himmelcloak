@@ -49,6 +49,7 @@ make test
 
 See [Getting Started](docs/Getting-Started.md) and [Testing](docs/Testing.md)
 for prerequisites, configuration, and CI behavior.
+For the root-only allowed-group reader, see [Group sync](docs/Getting-Started.md#group-sync).
 
 ## Documentation
 
@@ -58,7 +59,6 @@ The version-controlled pages in [`docs/`](docs/) are the primary documentation:
 - [Architecture](docs/Architecture.md)
 - [Development Plan](docs/Development-Plan.md)
 - [API Reference](docs/API-Reference.md)
-- [NSS Sync](docs/NSS-Sync.md)
 - [Testing](docs/Testing.md)
 - [Project Structure](docs/Project-Structure.md)
 - [Licensing](docs/Licensing.md)

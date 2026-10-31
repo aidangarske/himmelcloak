@@ -12,7 +12,6 @@ resumable login flow for Linux applications.
 | [[Architecture]] | Components and flow-driver design |
 | [[Development Plan]] | Core milestones and independent feature PRs |
 | [[API Reference]] | Current public Rust interface |
-| [[NSS Sync]] | Root CLI retrieval of an allowed Keycloak group |
 | [[Testing]] | Docker oracle and CI gates |
 | [[CI]] | Required merge checks and runtime baseline |
 | [[Project Structure]] | Workspace layout |

@@ -329,6 +329,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_empty_secret_and_invalid_configuration_before_http() {
+        let fake = Fake::new(vec![]);
+        assert!(read_with_transport(&config(), "allowed", "", &fake)
+            .await
+            .is_err());
+        let mut invalid = config();
+        invalid.server_url = Url::parse("http://keycloak.example").unwrap();
+        assert!(read_allowed_group(&invalid, "allowed", "secret")
+            .await
+            .is_err());
+        assert!(fake.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn group_id_cannot_change_the_endpoint_or_query() {
         let fake = Fake::new(vec![(200, TOKEN), (200, "[]")]);
         read_with_transport(&config(), "group?x=#value", "secret", &fake)
@@ -352,7 +366,7 @@ mod tests {
             .is_err());
         assert_eq!(fake.requests.lock().unwrap().len(), 1);
     }
-    /// Uses the disposable hc49-test-realm.json fixture; no production server or credentials.
+    /// Uses the disposable group-sync realm; no production server or credentials.
     #[tokio::test]
     #[ignore = "requires the disposable HTTPS Keycloak HC-49 fixture"]
     async fn read_only_service_account_live() {
