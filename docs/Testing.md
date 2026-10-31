@@ -30,7 +30,9 @@ client, then completes the login at the callback, so it proves the browser-free
 flow works without the password grant. It then redeems the same code again with
 the login's own verifier and nonce, which Keycloak refuses and answers by
 revoking the session the code created. A separate scenario holds a code past
-its lifespan and expects it refused. The test realm sets `accessCodeLifespan`
+its lifespan and expects it refused. A driver scenario walks alice's login
+through the login driver with a stand-in password handler to `Complete`, and a
+wrong password brings the login page back as a new `Username` challenge. The test realm sets `accessCodeLifespan`
 to 10 seconds so that scenario waits 12 seconds instead of over a minute; this
 only shortens how long a code can be redeemed, in the test realm only, and real
 deployments keep their own Keycloak setting.
@@ -45,6 +47,15 @@ the wolfSSL and curl release commits pinned in `scripts/build-native.sh`. The im
 both refs and commits in `/opt/himmelcloak-native/.himmelcloak-refs`.
 Each new login factor must add a live scenario before its feature is treated as
 complete.
+
+The challenge/answer contract is unit-tested without a server in `src/client.rs`
+and `src/flow/driver.rs`. Stub factor handlers drive recorded Keycloak pages
+from `tests/fixtures/keycloak` through a username, password, and one-time-code
+login to `Complete` with verified tokens. Every rejection path ends the login
+before anything more is sent: a wrong answer at each step, an ended or idle
+login, a time limit reached between challenges or during a request, pages and
+redirects the login cannot follow, a non-200 page, another client continuing
+the login, a failing handler, and a step abandoned mid-request.
 
 The exact Cargo versions remain in `Cargo.lock` for reproducible builds.
 Dependabot checks Cargo and GitHub Actions updates weekly, while the resolver

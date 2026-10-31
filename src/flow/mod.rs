@@ -24,6 +24,7 @@
 //! into. A flow is single-use: it ends on completion, cancellation, or expiry.
 pub mod classify;
 pub mod driver;
+pub(crate) mod factor;
 pub(crate) mod fetch;
 pub(crate) mod form;
 #[cfg(test)]
@@ -167,6 +168,7 @@ enum FlowState {
     Active,
     Cancelled,
     Expired,
+    Failed,
     Finished,
 }
 
@@ -180,6 +182,12 @@ pub struct AuthFlow {
     pkce_verifier: Zeroizing<String>,
     oauth_state: Zeroizing<String>,
     nonce: Zeroizing<String>,
+    /// The page waiting on the caller's answers; wiped when the flow ends.
+    pub(crate) pending: Option<driver::Pending>,
+    /// The client that began this login; no other client can continue it.
+    pub(crate) client: String,
+    /// `Start::login_hint`, the username Keycloak fills in on the login page.
+    pub(crate) login_hint: Option<String>,
 }
 
 impl AuthFlow {
@@ -191,6 +199,9 @@ impl AuthFlow {
             pkce_verifier: random_base64::<32>()?,
             oauth_state: random_base64::<16>()?,
             nonce: random_base64::<16>()?,
+            pending: None,
+            client: String::new(),
+            login_hint: None,
         })
     }
 
@@ -221,6 +232,7 @@ impl AuthFlow {
             FlowState::Active => Ok(()),
             FlowState::Cancelled => Err(Error::Cancelled),
             FlowState::Expired => Err(Error::Expired),
+            FlowState::Failed => Err(Error::Protocol("login flow failed")),
             FlowState::Finished => Err(Error::Protocol("login flow already finished")),
         }
     }
@@ -230,6 +242,12 @@ impl AuthFlow {
         self.ensure_active()?;
         self.end(FlowState::Finished);
         Ok(())
+    }
+
+    /// End the login after a failed check (charter section 2.6.4). Later steps are refused.
+    pub(crate) fn fail(&mut self) {
+        self.expire_if_due();
+        self.end(FlowState::Failed);
     }
 
     fn expire_if_due(&mut self) {
@@ -243,6 +261,7 @@ impl AuthFlow {
             self.lifecycle = state;
         }
         self.jar = fetch::CookieJar::default();
+        self.pending = None;
         self.clear_secrets();
     }
 
@@ -371,11 +390,6 @@ impl Drop for Tokens {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::driver;
-
-    fn password() -> Answer {
-        Answer::Password("correct-horse-battery-staple".to_owned())
-    }
 
     fn flow_with_cookie(time_limit: Duration) -> AuthFlow {
         let mut flow = AuthFlow::new(time_limit).unwrap();
@@ -383,16 +397,6 @@ mod tests {
         flow.jar.seed_session_cookie(&keycloak);
         assert!(!flow.jar.is_empty());
         flow
-    }
-
-    #[test]
-    fn active_flow_reaches_the_driver() {
-        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
-        assert!(flow.is_active());
-        assert!(matches!(
-            driver::advance(&mut flow, password()),
-            Err(Error::NotImplemented)
-        ));
     }
 
     #[test]
@@ -424,26 +428,18 @@ mod tests {
         assert!(flow.pkce_verifier().is_empty());
         assert!(flow.oauth_state().is_empty());
         assert!(flow.nonce().is_empty());
-        assert!(matches!(
-            driver::advance(&mut flow, password()),
-            Err(Error::Cancelled)
-        ));
-        assert!(matches!(driver::step(&mut flow), Err(Error::Cancelled)));
+        assert_eq!(flow.ensure_active().err(), Some(Error::Cancelled));
     }
 
     #[test]
     fn flow_past_its_time_limit_expires() {
         let mut flow = flow_with_cookie(Duration::ZERO);
         assert!(!flow.is_active());
-        assert!(matches!(
-            driver::advance(&mut flow, password()),
-            Err(Error::Expired)
-        ));
+        assert_eq!(flow.ensure_active().err(), Some(Error::Expired));
         assert!(flow.jar.is_empty());
         assert!(flow.pkce_verifier().is_empty());
         assert!(flow.oauth_state().is_empty());
         assert!(flow.nonce().is_empty());
-        assert!(matches!(driver::step(&mut flow), Err(Error::Expired)));
     }
 
     #[test]
@@ -470,6 +466,34 @@ mod tests {
     }
 
     #[test]
+    fn failed_flow_refuses_every_later_step() {
+        let mut flow = flow_with_cookie(DEFAULT_LOGIN_TIMEOUT);
+        flow.fail();
+        assert!(!flow.is_active());
+        assert!(flow.jar.is_empty());
+        assert!(flow.pkce_verifier().is_empty());
+        assert!(flow.oauth_state().is_empty());
+        assert!(flow.nonce().is_empty());
+        flow.cancel();
+        assert_eq!(
+            flow.ensure_active().err(),
+            Some(Error::Protocol("login flow failed"))
+        );
+
+        // A failure never rewrites how the login already ended.
+        let mut expired = flow_with_cookie(Duration::ZERO);
+        expired.fail();
+        assert_eq!(expired.ensure_active().err(), Some(Error::Expired));
+        let mut finished = flow_with_cookie(DEFAULT_LOGIN_TIMEOUT);
+        finished.finish().unwrap();
+        finished.fail();
+        assert_eq!(
+            finished.ensure_active().err(),
+            Some(Error::Protocol("login flow already finished"))
+        );
+    }
+
+    #[test]
     fn finished_flow_cannot_be_replayed() {
         let mut flow = flow_with_cookie(DEFAULT_LOGIN_TIMEOUT);
         flow.finish().unwrap();
@@ -479,10 +503,10 @@ mod tests {
         assert!(flow.nonce().is_empty());
         flow.cancel();
         assert!(!flow.is_active());
-        assert!(matches!(
-            driver::advance(&mut flow, Answer::Acknowledge),
-            Err(Error::Protocol(_))
-        ));
+        assert_eq!(
+            flow.ensure_active().err(),
+            Some(Error::Protocol("login flow already finished"))
+        );
     }
 
     #[test]
