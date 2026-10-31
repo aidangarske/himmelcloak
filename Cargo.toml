@@ -93,3 +93,6 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", 
 url = "2"
 wolfssl-wolfcrypt = { version = "=2.2.0", features = ["signature"] }
 zeroize = { version = "1", features = ["zeroize_derive", "serde"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

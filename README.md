@@ -58,6 +58,7 @@ The version-controlled pages in [`docs/`](docs/) are the primary documentation:
 - [Architecture](docs/Architecture.md)
 - [Development Plan](docs/Development-Plan.md)
 - [API Reference](docs/API-Reference.md)
+- [NSS Sync](docs/NSS-Sync.md)
 - [Testing](docs/Testing.md)
 - [Project Structure](docs/Project-Structure.md)
 - [Licensing](docs/Licensing.md)

@@ -6,6 +6,7 @@
 - [Software authenticator](Architecture#software-authenticator)
 - [[Development Plan]]
 - [[API Reference]]
+- [[NSS Sync]]
 - [[Testing]]
 - [[CI]]
 - [[Project Structure]]
