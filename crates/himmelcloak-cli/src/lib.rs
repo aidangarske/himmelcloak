@@ -20,6 +20,10 @@
  */
 //! Administrator operations used by the command-line dispatcher.
 #[cfg(unix)]
+mod identity;
+#[cfg(unix)]
+mod local_files;
+#[cfg(unix)]
 mod sync_users;
 
 #[cfg(unix)]
