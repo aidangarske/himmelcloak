@@ -22,22 +22,36 @@
 
 pub mod config;
 pub mod conversation;
+pub mod identity;
+pub mod pam_conv;
+#[cfg(any(test, feature = "conversation-selftest"))]
+mod selftest;
 
 use std::ffi::{c_char, c_int, c_void};
 
-const PAM_AUTH_ERR: c_int = 7;
+pub(crate) const PAM_AUTH_ERR: c_int = 7;
 const PAM_PERM_DENIED: c_int = 6;
 const PAM_CRED_ERR: c_int = 17;
-const PAM_CONV_ERR: c_int = 19;
 
-/// Deny authentication until the login flow is implemented.
+/// Deny authentication until the login engine is connected (HC-42).
 #[unsafe(no_mangle)]
 pub extern "C" fn pam_sm_authenticate(
-    _pamh: *mut c_void,
+    pamh: *mut c_void,
     _flags: c_int,
     _argc: c_int,
     _argv: *const *const c_char,
 ) -> c_int {
+    authenticate(pamh)
+}
+
+/// Test-only build: run the conversation round trip, which still denies.
+#[cfg(all(feature = "conversation-selftest", debug_assertions, not(test)))]
+fn authenticate(pamh: *mut c_void) -> c_int {
+    selftest::run(pamh)
+}
+
+#[cfg(not(all(feature = "conversation-selftest", debug_assertions, not(test))))]
+fn authenticate(_pamh: *mut c_void) -> c_int {
     PAM_AUTH_ERR
 }
 
@@ -61,11 +75,6 @@ pub extern "C" fn pam_sm_setcred(
     _argv: *const *const c_char,
 ) -> c_int {
     PAM_CRED_ERR
-}
-
-/// Conversation placeholder; prompting is not implemented yet.
-pub fn conversation_stub(_pamh: *mut c_void, _prompt: &str, _echo: bool) -> Result<String, c_int> {
-    Err(PAM_CONV_ERR)
 }
 
 #[cfg(test)]
@@ -97,15 +106,6 @@ mod tests {
             let result = pam_sm_setcred(ptr::null_mut(), flags, 0, ptr::null());
 
             assert_eq!(result, 17); // Linux-PAM: PAM_CRED_ERR
-        }
-    }
-
-    #[test]
-    fn conversation_fails_without_returning_a_response() {
-        for echo in [false, true] {
-            let result = conversation_stub(ptr::null_mut(), "Password: ", echo);
-
-            assert_eq!(result, Err(19));
         }
     }
 }

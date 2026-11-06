@@ -19,7 +19,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! Pure translation of the real Himmelcloak Challenge API into planned PAM messages.
-//! This layer never invokes a callback, collects a secret, or reports successful login.
+//! This layer never invokes a callback, collects a secret, or reports successful login;
+//! [`crate::pam_conv`] sends the planned messages through the application.
 
 use std::ffi::c_int;
 use std::fmt;
@@ -39,6 +40,11 @@ pub enum MessageStyle {
 impl MessageStyle {
     pub fn as_raw(self) -> c_int {
         self as c_int
+    }
+
+    /// Hidden and visible prompts expect an answer; information and errors do not.
+    pub fn expects_input(self) -> bool {
+        matches!(self, Self::HiddenInput | Self::VisibleInput)
     }
 }
 
@@ -211,6 +217,14 @@ mod tests {
         assert_eq!(MessageStyle::VisibleInput.as_raw(), 2);
         assert_eq!(MessageStyle::Error.as_raw(), 3);
         assert_eq!(MessageStyle::Information.as_raw(), 4);
+    }
+
+    #[test]
+    fn only_prompts_expect_input() {
+        assert!(MessageStyle::HiddenInput.expects_input());
+        assert!(MessageStyle::VisibleInput.expects_input());
+        assert!(!MessageStyle::Error.expects_input());
+        assert!(!MessageStyle::Information.expects_input());
     }
 
     #[test]
