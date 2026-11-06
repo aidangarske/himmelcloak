@@ -15,6 +15,14 @@ crate-type = ["cdylib"]
 [lints]
 workspace = true
 
+[features]
+# Test-only: pam_sm_authenticate runs a conversation round trip and still denies.
+# It has no effect in release builds. Used by the disposable PAM stack test.
+conversation-selftest = []
+
 [dependencies]
 himmelcloak = { path = "../.." }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+zeroize = "1"
