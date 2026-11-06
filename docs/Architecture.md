@@ -142,11 +142,21 @@ The internal `RefCell` makes the authenticator non-`Sync`; sharing it across
 Tokio tasks requires a mutex around mutable credential state. Borrow conflicts
 return `Crypto`. Keys and counters are lost when the instance is dropped.
 
-Keycloak registration, attestation, persistent storage, discoverable credentials,
-CTAP2 messages, and production CBOR parsing remain pending. The live test realm
-preloads a disposable software credential; a test-only signer proves Keycloak
-accepts its assertions and rejects tampered signatures. The production constructor
-still generates a fresh key for every instance. See [Testing](Testing.md).
+`WebAuthnAdapter::make_credential` exports the fresh instance's registration
+material as a CBOR `none` attestation object: UP and AT flags, zero counter and
+AAGUID, credential ID, and a COSE EC2/ES256 public key. It requires the bound RP,
+an offered ES256 algorithm, and a credential not in the exclude list. Required
+user verification and resident keys return `UnsupportedFactor`. Use one new
+instance per registration and retain it for assertions; registration does not
+advance the counter, and an instance used for assertions cannot be re-registered.
+Other adapters default to `UnsupportedFactor` for registration.
+
+The live suite covers both a preloaded test credential and registration of a
+fresh random key followed by sign-in. Its test-only bridge handles Keycloak's
+registration and assertion form posting. Production WebAuthn page classification,
+challenge/origin handling and posting remain the WebAuthn factor's responsibility;
+its page handler is not implemented yet. Device attestation, persistent storage,
+discoverable credentials, and CTAP2 messages remain pending. See [Testing](Testing.md).
 
 Unit tests check the assertion-data layout and an independently calculated RP
 ID hash, verify DER signatures using the public key, reject tampering, and
@@ -168,7 +178,7 @@ Docker. See [Testing](Testing.md).
 | --- | --- | --- |
 | Password | Direct Access Grant; later native flow | Direct grant implemented; native flow driver in place, password page handler pending; login form and code exchange live-tested with direct grants disabled |
 | TOTP / HOTP | wolfCrypt HMAC generation and verification; Direct Access Grant; later native flow | SHA-1, SHA-256, and SHA-512 generation and verification implemented; Keycloak credential persistence and live TOTP fixture pending |
-| WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter and seeded live assertion fixture implemented; public native flow pending |
+| WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter registration and sign-in live-tested; production WebAuthn page handler pending |
 | SMS / email OTP | Native flow | Planned |
 | Recovery codes | Native flow | Planned |
 | X.509 / PIV / CAC | Mutual TLS and Keycloak flow | Planned |

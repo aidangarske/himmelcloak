@@ -72,3 +72,21 @@ client credentials and returns `Vec<GroupMember>` with `id`, `username`, and
 failure. This service-account API is separate from `PublicClientApplication`'s
 public-client login flow. See [Group sync](Getting-Started.md#group-sync) for CLI configuration and
 [Group synchronization](Testing.md#group-synchronization) for the live fixture.
+
+## Software authenticator registration
+
+With `webauthn-virtual`, create a fresh `SoftwareAuthenticator::new(rp_id)` and
+call its `WebAuthnAdapter::make_credential(&WebAuthnCreateRequest)` method.
+The request carries the RP ID, offered COSE algorithms, excluded credential IDs,
+user-verification policy, and whether a resident key is required. The backend
+supports ES256 (`-7`), explicit credentials, and simulated user presence. Required
+UV or resident keys, or a list without ES256, returns `UnsupportedFactor`.
+A mismatched RP, excluded credential, malformed exclusion list, or credential
+already used for assertions returns `AuthenticationRejected`.
+
+`WebAuthnRegistration` contains the public credential ID and a CBOR attestation
+object with format `none`. It provides no device attestation signature. The
+caller builds `clientDataJSON` with the real server challenge, origin and
+`webauthn.create` type and posts it with the response; the authenticator does
+not parse pages or send HTTP requests. Keep the same instance for subsequent
+`get_assertion` requests. Private key material never leaves the instance.
