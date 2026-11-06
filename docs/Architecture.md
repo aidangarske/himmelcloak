@@ -261,8 +261,19 @@ is enforced by the application's request scope, not by a claim of per-group serv
 isolation. Deployments requiring server-enforced isolation should configure Keycloak
 fine-grained group permissions separately.
 
-This stage writes the complete membership as JSON on stdout after all pages succeed,
-retaining each member's `id`, `username`, and `enabled` state. It does not yet allocate
-UIDs, write local account files, change NSS configuration, schedule a timer, or enable
-login. See [Group sync](Getting-Started.md#group-sync) and its
+The sync job maps enabled members to non-root accounts and writes one versioned
+`/var/lib/himmelcloak/users.json` snapshot containing users, a shared group, and
+persistent UID/name reservations. The group and account lists commit together
+through a synced temporary file and atomic rename. Failed fetches, validation,
+or pre-rename writes keep the previous snapshot. The same checked directory
+descriptor is locked and used for loading and publishing, excluding overlapping
+syncs. A directory-sync error after rename cannot roll back the visible snapshot.
+
+The documented mapping and JSON format are proposed contracts for the later NSS
+reader. UIDs derive from the server/realm namespace and Keycloak ID in a reserved
+range. Collisions with current or historical synced identities, or accounts in
+`/etc/passwd` and `/etc/group`, reject the sync; other identity sources must be
+kept outside this range by the administrator. Removed users retain reservations.
+The command does not alter `/etc/passwd`, `/etc/group`, NSS configuration, timers,
+home directories, or login services. See [Group sync](Getting-Started.md#group-sync) and its
 [live and unit tests](Testing.md#group-synchronization).

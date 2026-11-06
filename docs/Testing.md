@@ -116,6 +116,27 @@ They also check accepted size boundaries and unchanged counters after failure.
 
 ## Group synchronization
 
+The CLI's ignored `sync_users::tests::live_sync_saves_accounts_and_refuses_root`
+test runs the real sync command against the disposable HTTPS group-sync realm.
+It checks the saved user/group snapshot, stable IDs across two runs, rejection
+of a real Keycloak user named `root`, and rejection of a zero-based UID range.
+Rejected syncs must leave the last good snapshot unchanged. The root user is in
+a separate `root-rejection` group; the normal allowed-group fixture is unchanged.
+Run this test as root only in a disposable test environment:
+
+```sh
+HC49_KEYCLOAK_URL=https://localhost:18443 \
+HC49_KEYCLOAK_CA=/tmp/himmelcloak-hc49-live/server.crt \
+scripts/with-native.sh cargo test --locked -p himmelcloak-cli --lib \
+  sync_users::tests::live_sync_saves_accounts_and_refuses_root -- --ignored --exact
+```
+
+Use a fresh fixture database to import the added root-rejection user. Compose
+and stable/nightly CI now include workspace library tests in the live command
+so this scenario runs alongside the existing core login tests. Unit tests cover
+UID/name reservations after removal and rename, collisions with local accounts,
+concurrent-sync exclusion, symlink rejection, and pre-rename write failures.
+
 Compose also imports `tests/keycloak/hc49-test-realm.json`, a separate disposable
 realm with an allowed member, an unrelated member, a read-only service account,
 and an account with no read permission. Its secrets are public test values, never
