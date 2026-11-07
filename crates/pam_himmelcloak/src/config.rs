@@ -18,15 +18,23 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
-//! Sprint 2 parses TOML syntax; client settings and identity rules are validated later.
+//! Reads `/etc/himmelcloak/himmelcloak.toml` and validates the PAM module's settings.
 //!
-//! A parsed document is not permission to authenticate. Unknown keys and sections are
-//! retained until the shared settings schema is finalized in HC-41.
+//! [`ConfigDocument`] checks TOML syntax and size. [`ConfigDocument::pam_settings`]
+//! then validates the `[pam]` Keycloak connection and the `[identity]` mapping
+//! rules; a document is only usable for login after that succeeds. Other tables,
+//! such as the CLI's `[sync]` and `[login]`, are left to their own readers.
+//! [`ConfigDocument::load_trusted`] refuses files another user could change.
 
 use std::fmt;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
-use std::path::Path;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+use crate::identity::{IdentityRules, IdentityTable};
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/himmelcloak/himmelcloak.toml";
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
@@ -41,16 +49,26 @@ pub enum ConfigError {
     Read(io::Error),
     TooLarge,
     Malformed,
+    /// The file is a symlink, not a regular file, not owned by this user, or
+    /// writable by group or others.
+    Untrusted,
+    Invalid(&'static str),
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // TOML diagnostics can echo entire input lines, including sensitive values.
-        f.write_str(match self {
-            Self::Read(_) => "Cannot read Himmelcloak configuration",
-            Self::TooLarge => "Himmelcloak configuration exceeds 64 KiB",
-            Self::Malformed => "Malformed Himmelcloak TOML configuration",
-        })
+        // TOML diagnostics can echo entire input lines, including sensitive values,
+        // so every message is fixed text.
+        match self {
+            Self::Read(_) => f.write_str("Cannot read Himmelcloak configuration"),
+            Self::TooLarge => f.write_str("Himmelcloak configuration exceeds 64 KiB"),
+            Self::Malformed => f.write_str("Malformed Himmelcloak TOML configuration"),
+            Self::Untrusted => f.write_str(
+                "Himmelcloak configuration must be a regular file owned by root \
+                 and not writable by others",
+            ),
+            Self::Invalid(reason) => write!(f, "Invalid Himmelcloak configuration: {reason}"),
+        }
     }
 }
 
@@ -61,6 +79,22 @@ impl std::error::Error for ConfigError {
             _ => None,
         }
     }
+}
+
+/// Validated settings the PAM module needs before it may start a login.
+pub struct PamSettings {
+    pub keycloak: himmelcloak::config::Config,
+    pub identity: IdentityRules,
+}
+
+/// The `[pam]` table: which Keycloak server, realm, and public client to use.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PamTable {
+    server_url: String,
+    realm: String,
+    client_id: String,
+    ca_bundle: Option<PathBuf>,
 }
 
 impl ConfigDocument {
@@ -74,10 +108,34 @@ impl ConfigDocument {
 
     /// Read at most the limit plus one byte, so an oversized file is never read fully.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        Self::read_from(File::open(path).map_err(ConfigError::Read)?)
+    }
+
+    /// Like [`load`](Self::load), but only from a regular file owned by the
+    /// effective user (root in a login program) that group and others cannot
+    /// write. Symlinks are refused. The checks use the opened descriptor, so the
+    /// file cannot be swapped between the check and the read.
+    pub fn load_trusted(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(path)
+            .map_err(|error| match error.raw_os_error() {
+                Some(libc::ELOOP) => ConfigError::Untrusted,
+                _ => ConfigError::Read(error),
+            })?;
+        let meta = file.metadata().map_err(ConfigError::Read)?;
+        // SAFETY: geteuid has no preconditions.
+        let euid = unsafe { libc::geteuid() };
+        if !meta.is_file() || meta.uid() != euid || meta.mode() & 0o022 != 0 {
+            return Err(ConfigError::Untrusted);
+        }
+        Self::read_from(file)
+    }
+
+    fn read_from(file: File) -> Result<Self, ConfigError> {
         let mut input = String::new();
-        File::open(path)
-            .map_err(ConfigError::Read)?
-            .take(MAX_CONFIG_BYTES as u64 + 1)
+        file.take(MAX_CONFIG_BYTES as u64 + 1)
             .read_to_string(&mut input)
             .map_err(ConfigError::Read)?;
         Self::parse(&input)
@@ -85,6 +143,40 @@ impl ConfigDocument {
 
     pub fn as_table(&self) -> &toml::Table {
         &self.table
+    }
+
+    /// Validate the `[pam]` connection settings and `[identity]` rules.
+    pub fn pam_settings(&self) -> Result<PamSettings, ConfigError> {
+        let pam: PamTable = self
+            .table
+            .get("pam")
+            .ok_or(ConfigError::Invalid("missing [pam] settings"))?
+            .clone()
+            .try_into()
+            .map_err(|_| ConfigError::Invalid("invalid [pam] settings"))?;
+        if pam
+            .ca_bundle
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+        {
+            return Err(ConfigError::Invalid(
+                "[pam] ca_bundle must be an absolute path",
+            ));
+        }
+        let mut keycloak =
+            himmelcloak::config::Config::new(&pam.server_url, &pam.realm, &pam.client_id)
+                .map_err(|_| ConfigError::Invalid("invalid Keycloak connection in [pam]"))?;
+        keycloak.ca_bundle = pam.ca_bundle;
+
+        let table: IdentityTable = self
+            .table
+            .get("identity")
+            .ok_or(ConfigError::Invalid("missing [identity] rules"))?
+            .clone()
+            .try_into()
+            .map_err(|_| ConfigError::Invalid("invalid [identity] rules"))?;
+        let identity = IdentityRules::from_table(table).map_err(ConfigError::Invalid)?;
+        Ok(PamSettings { keycloak, identity })
     }
 }
 
@@ -228,6 +320,156 @@ mod tests {
         assert!(matches!(
             ConfigDocument::load(&file.0),
             Err(ConfigError::TooLarge)
+        ));
+    }
+
+    const VALID: &str = "[pam]\nserver_url = 'https://keycloak.example'\nrealm = 'test'\n\
+        client_id = 'linux-login'\n[identity]\n";
+
+    fn settings(source: &str) -> Result<PamSettings, ConfigError> {
+        ConfigDocument::parse(source)?.pam_settings()
+    }
+
+    fn invalid_reason(source: &str) -> &'static str {
+        match settings(source) {
+            Err(ConfigError::Invalid(reason)) => reason,
+            Err(other) => panic!("unexpected error {other:?} for {source}"),
+            Ok(_) => panic!("accepted {source}"),
+        }
+    }
+
+    #[test]
+    fn valid_pam_and_identity_settings_are_accepted() {
+        let settings = settings(&format!(
+            "{VALID}claim = 'email'\n[sync]\nunrelated = true\n"
+        ))
+        .unwrap();
+        assert_eq!(settings.keycloak.realm, "test");
+        assert_eq!(settings.keycloak.client_id, "linux-login");
+        assert_eq!(settings.keycloak.ca_bundle, None);
+        assert_eq!(settings.identity.claim(), crate::identity::Claim::Email);
+
+        let with_ca = settings_with("ca_bundle = '/etc/himmelcloak/ca.pem'");
+        assert_eq!(
+            with_ca.keycloak.ca_bundle.as_deref(),
+            Some(Path::new("/etc/himmelcloak/ca.pem"))
+        );
+    }
+
+    fn settings_with(extra_pam_line: &str) -> PamSettings {
+        settings(&VALID.replace("[identity]", &format!("{extra_pam_line}\n[identity]"))).unwrap()
+    }
+
+    #[test]
+    fn missing_or_invalid_pam_connection_settings_are_rejected() {
+        assert_eq!(invalid_reason("[identity]\n"), "missing [pam] settings");
+        assert_eq!(
+            invalid_reason("pam = 'x'\n[identity]\n"),
+            "invalid [pam] settings"
+        );
+        for change in [
+            ("realm = 'test'\n", ""),
+            ("[identity]", "uid = 0\n[identity]"),
+        ] {
+            assert_eq!(
+                invalid_reason(&VALID.replacen(change.0, change.1, 1)),
+                "invalid [pam] settings"
+            );
+        }
+        assert_eq!(
+            invalid_reason(&VALID.replace("[identity]", "ca_bundle = 'ca.pem'\n[identity]")),
+            "[pam] ca_bundle must be an absolute path"
+        );
+        for (from, to) in [
+            ("https://keycloak.example", "http://keycloak.example"),
+            ("https://keycloak.example", "not a url"),
+            ("realm = 'test'", "realm = ''"),
+        ] {
+            assert_eq!(
+                invalid_reason(&VALID.replace(from, to)),
+                "invalid Keycloak connection in [pam]"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_rules_are_required_and_validated() {
+        let without = VALID.replace("[identity]\n", "");
+        assert_eq!(invalid_reason(&without), "missing [identity] rules");
+        assert_eq!(
+            invalid_reason(&format!("identity = 'any'\n{without}")),
+            "invalid [identity] rules"
+        );
+        assert_eq!(
+            invalid_reason(&format!("{VALID}rule = 'future-rule'\n")),
+            "invalid [identity] rules"
+        );
+        assert_eq!(
+            invalid_reason(&format!(
+                "{VALID}[[identity.map]]\nkeycloak = 'alice'\nlocal = 'root'\n"
+            )),
+            "a mapping rule must not target root"
+        );
+        assert_eq!(
+            ConfigError::Invalid("a mapping rule must not target root").to_string(),
+            "Invalid Himmelcloak configuration: a mapping rule must not target root"
+        );
+    }
+
+    #[test]
+    fn trusted_load_accepts_only_owned_files_others_cannot_write() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let file = TestFile::new();
+        std::fs::write(&file.0, VALID).unwrap();
+        std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(ConfigDocument::load_trusted(&file.0)
+            .unwrap()
+            .pam_settings()
+            .is_ok());
+
+        for mode in [0o664, 0o646, 0o666] {
+            std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(matches!(
+                ConfigDocument::load_trusted(&file.0),
+                Err(ConfigError::Untrusted)
+            ));
+        }
+        std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let link = TestFile::new();
+        symlink(&file.0, &link.0).unwrap();
+        assert!(matches!(
+            ConfigDocument::load_trusted(&link.0),
+            Err(ConfigError::Untrusted)
+        ));
+        assert!(matches!(
+            ConfigDocument::load_trusted(std::env::temp_dir()),
+            Err(ConfigError::Untrusted)
+        ));
+        let missing = TestFile::new();
+        assert!(matches!(
+            ConfigDocument::load_trusted(&missing.0),
+            Err(ConfigError::Read(_))
+        ));
+        assert!(ConfigError::Untrusted
+            .to_string()
+            .contains("not writable by others"));
+    }
+
+    #[test]
+    fn trusted_load_still_enforces_size_and_syntax() {
+        use std::os::unix::fs::PermissionsExt;
+        let file = TestFile::new();
+        std::fs::write(&file.0, " ".repeat(MAX_CONFIG_BYTES + 1)).unwrap();
+        std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            ConfigDocument::load_trusted(&file.0),
+            Err(ConfigError::TooLarge)
+        ));
+        std::fs::write(&file.0, "[pam").unwrap();
+        assert!(matches!(
+            ConfigDocument::load_trusted(&file.0),
+            Err(ConfigError::Malformed)
         ));
     }
 }
