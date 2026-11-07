@@ -131,29 +131,55 @@ Success returns a JSON array of `{id, username, enabled}` objects. Failure exits
 nonzero with no partial JSON and no fallback to listing all users. Local account-file
 writing and system-login integration are not implemented by this stage.
 
-## Run the real Keycloak suite
+## Build and test
 
-Docker with the Compose v2 plugin and the OpenSSL command-line tool is the
-simplest supported development environment:
+Everything runs in Docker. The host needs Docker with the Compose v2 plugin,
+`make`, and the OpenSSL command-line tool:
 
 ```sh
-make test-live
-make oracle-down
+make         # build every crate in the tester image
+make test    # unit tests, lint, then the live Keycloak suite; removes containers after
+make demo    # interactive test-login against Keycloak, then Keycloak's event log
+make clean   # stop Keycloak and remove the test containers and volumes
 ```
 
-This builds a test image with the pinned Rust toolchain, the pinned wolfSSL stable release, and the
-`curl` crate linked to a wolfSSL-backed libcurl. It generates a local test CA, starts stock
-Keycloak with the seeded realm, and runs real HTTPS login tests.
-`KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:nightly make test-live` selects the nightly server. CI
-resolves the latest stable Keycloak release and the nightly image to exact image digests at run
-time. Stable login is required for merging; nightly failures remain visible in an optional
-check without cancelling stable. See [CI gates and runtime baseline](CI.md) for triggers
-and branch-rule settings.
+`make help` lists the individual steps:
 
-On Linux, `make native` builds the same native libraries into `.native`. `make build`, `make test`,
-and `make lint` use them. The local build requires Autotools, libtool, pkg-config, clang, and a
+| Target | Runs |
+| --- | --- |
+| `make unit` | `cargo test --workspace --tests` in the tester image |
+| `make lint` | `cargo fmt --check` and clippy with `-D warnings`, as CI does |
+| `make test-live` | The live Keycloak suite only, leaving Keycloak running |
+| `make test-live-verbose` | The live suite plus client steps and Keycloak's event lines |
+| `make shell` | A shell in the tester image with the checkout at `/work` |
+| `make oracle-up` | Keycloak in the background, for manual testing |
+
+The tester image (`tests/build/Dockerfile`) contains the pinned Rust toolchain,
+the pinned wolfSSL stable release, and the `curl` crate linked to a wolfSSL-backed
+libcurl. Docker caches it after the first build. Cargo output goes to a Docker
+volume, so the host `target/` directory is untouched. The live suite and the demo
+generate a local test CA, start stock Keycloak with the seeded realm, and log in
+over real HTTPS through the `keycloak.test` Docker network alias.
+
+`make demo` logs in through the `himmelcloak-browser-only` client, which has the
+password grant disabled, so the CLI walks Keycloak's login pages. Enter `alice`
+and `correct-horse-battery-staple`; run it again with a wrong password to see
+the rejection.
+
+`KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:nightly make test` selects the nightly
+server. Keycloak gets a random free host port, so an existing service on 8443
+does not block the tests; set `KEYCLOAK_HOST_PORT=8443` to pin it. CI resolves
+the latest stable Keycloak release and the nightly image to exact image digests
+at run time. Stable login is required for merging; nightly failures remain
+visible in an optional check without cancelling stable.
+See [CI gates and runtime baseline](CI.md) for triggers and branch-rule settings.
+
+### Native Linux build
+
+On Linux, `make native` builds the same native libraries into `.native`. `make local-build`,
+`make local-test`, and `make local-lint` use them. The local build requires Autotools, libtool, pkg-config, clang, and a
 Rust toolchain from `rust-toolchain.toml`. Plain `cargo test` skips the ignored live tests;
-`make test` runs unit tests plus the local integration and contract tests. Use `make test-live` for Keycloak.
+`make local-test` runs unit tests plus the local integration and contract tests. Use `make test-live` for Keycloak.
 The Linux native build links wolfSSL and libcurl statically so locally built
 applications can run without setting a library search path. The static objects
 are position independent (`--with-pic`) so they can also be linked into the PAM
@@ -162,8 +188,8 @@ prefix predates it, choose a fresh prefix rather than reusing non-PIC objects:
 
 ```bash
 export NATIVE_PREFIX="$PWD/target/native-pic"
-make test
-make lint
+make local-test
+make local-lint
 ```
 
 The previous native prefix is left intact. See the [PAM module notes](../crates/pam_himmelcloak/README.md)

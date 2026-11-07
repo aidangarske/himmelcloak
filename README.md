@@ -26,29 +26,24 @@ planned native login flow.
 
 ## Quick start
 
-Docker with Compose v2 and the OpenSSL command-line tool provide the
-reproducible build and a real Keycloak login test:
+You need Docker with Compose v2, `make`, and the `openssl` command-line tool.
+Nothing else is installed on your machine; Linux and macOS both work.
 
 ```sh
 git clone https://github.com/aidangarske/himmelcloak.git
 cd himmelcloak
-make test-live
-make oracle-down
+make help    # all make options
+make         # build all crate dependencies
+make test    # unit tests, lint, and the live Keycloak login suite
+make demo    # log in to a real Keycloak with the CLI and show the server's events
+make clean   # stop Keycloak and remove the test containers
 ```
 
-The test image builds the pinned wolfSSL stable release and wolfSSL-backed libcurl, imports a
-disposable realm into stock Keycloak, and runs the Rust client over HTTPS.
-On Linux with the Rust toolchain pinned in `rust-toolchain.toml` and the native
-build prerequisites installed:
-
-```sh
-make native
-make build
-make test
-```
+The first run takes several minutes because it compiles wolfSSL and curl into
+the build image. Later runs reuse that image and rebuild only changed Rust code.
 
 See [Getting Started](docs/Getting-Started.md) and [Testing](docs/Testing.md)
-for prerequisites, configuration, and CI behavior.
+for prerequisites, configuration, make options, and CI behavior.
 For the root-only allowed-group reader, see [Group sync](docs/Getting-Started.md#group-sync).
 
 ## Documentation
