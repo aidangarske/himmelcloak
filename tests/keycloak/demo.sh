@@ -34,8 +34,9 @@ ca_bundle = "/work/tests/keycloak/.generated/ca.pem"
 EOF
 
 "${compose[@]}" up -d --pull always --force-recreate keycloak
-"${compose[@]}" build tester
-"${compose[@]}" run --rm --no-deps tester cargo build --locked -p himmelcloak-cli
+"$script_dir/tester-image.sh"
+"${compose[@]}" run --rm --no-deps tester sh -c \
+    'cargo build --locked -p himmelcloak-cli && . /etc/os-release && echo && echo "Distro: $PRETTY_NAME" && curl --version | head -n 1'
 
 cat <<'EOF'
 
@@ -51,8 +52,8 @@ EOF
 
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 result=0
-"${compose[@]}" run --rm --no-deps -w /work/tests/keycloak/.generated/demo \
-    --entrypoint /tmp/himmelcloak-target/debug/himmelcloak-cli tester test-login || result=$?
+"${compose[@]}" run --rm --no-deps -w /work/tests/keycloak/.generated/demo tester \
+    cargo run --quiet --locked --manifest-path /work/Cargo.toml -p himmelcloak-cli -- test-login || result=$?
 
 echo
 echo "Exit status: $result"

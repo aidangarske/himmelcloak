@@ -161,10 +161,11 @@ volume, so the host `target/` directory is untouched. The live suite and the dem
 generate a local test CA, start stock Keycloak with the seeded realm, and log in
 over real HTTPS through the `keycloak.test` Docker network alias.
 
-`make demo` logs in through the `himmelcloak-browser-only` client, which has the
-password grant disabled, so the CLI walks Keycloak's login pages. Enter `alice`
-and `correct-horse-battery-staple`; run it again with a wrong password to see
-the rejection.
+`make demo` first prints the distribution and the `curl --version` line, which
+names the wolfSSL backend. It then logs in through the `himmelcloak-browser-only`
+client, which has the password grant disabled, so the CLI walks Keycloak's login
+pages. Enter `alice` and `correct-horse-battery-staple`; run it again with a
+wrong password to see the rejection.
 
 `KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:nightly make test` selects the nightly
 server. Keycloak gets a random free host port, so an existing service on 8443
@@ -173,6 +174,30 @@ the latest stable Keycloak release and the nightly image to exact image digests
 at run time. Stable login is required for merging; nightly failures remain
 visible in an optional check without cancelling stable.
 See [CI gates and runtime baseline](CI.md) for triggers and branch-rule settings.
+
+### Other Linux distributions
+
+Every target accepts `DISTRO=<name>`, for example
+`make test DISTRO=opensuse-leap-16.0` or `make demo DISTRO=rockylinux-9`.
+`make test-distros` runs `make test` on each distribution in turn.
+
+| `DISTRO` | Base image |
+| --- | --- |
+| `debian-12` | `debian:12` |
+| `ubuntu-24.04` | `ubuntu:24.04` |
+| `opensuse-leap-16.0` | `opensuse/leap:16.0` |
+| `opensuse-tumbleweed` | `opensuse/tumbleweed` |
+| `sle-bci-16.0` | SUSE Linux Enterprise BCI 16.0 |
+| `rockylinux-9` | `rockylinux:9` |
+| `fedora` | `fedora` |
+
+With `DISTRO` set, the tester is built locally from the matching
+`.github/docker/himmelcloak-ci/` Dockerfile, the same files the cross-distro CI
+uses, and tagged `himmelcloak-tester:<name>`. Each image compiles the branch's
+pinned wolfSSL and libcurl, so the first build of a distribution takes several
+minutes and later runs reuse Docker's cache. These images are x86-64 only, so
+Apple silicon runs them under emulation. Each distribution keeps its own Cargo
+build directory, so switching does not mix build output.
 
 ### Native Linux build
 

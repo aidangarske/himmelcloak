@@ -33,14 +33,33 @@ Nothing else is installed on your machine; Linux and macOS both work.
 git clone https://github.com/aidangarske/himmelcloak.git
 cd himmelcloak
 make help    # all make options
-make         # build all crate dependencies
+make         # build every crate
 make test    # unit tests, lint, and the live Keycloak login suite
 make demo    # log in to a real Keycloak with the CLI and show the server's events
 make clean   # stop Keycloak and remove the test containers
 ```
 
+Add `DISTRO=<name>` to any target to run it on another Linux distribution:
+
+```sh
+make test DISTRO=opensuse-leap-16.0
+make demo DISTRO=fedora
+make test-distros   # make test on all seven, one after another
+```
+
+Supported values are `debian-12`, `ubuntu-24.04`, `opensuse-leap-16.0`,
+`opensuse-tumbleweed`, `sle-bci-16.0`, `rockylinux-9`, and `fedora`. Without
+`DISTRO`, the build uses the Debian 12 image from `tests/build/Dockerfile`.
+
 The first run takes several minutes because it compiles wolfSSL and curl into
 the build image. Later runs reuse that image and rebuild only changed Rust code.
+
+`make demo` prints the distribution and the curl build (`libcurl ... wolfSSL/...`),
+then prompts for a login. Enter `alice` and `correct-horse-battery-staple`; a
+wrong password shows the rejection. The demo covers the browser-free password
+login. `make test` also covers TOTP and HOTP, WebAuthn with a virtual passkey,
+refresh and revocation, replayed and expired codes, certificate rejection, and
+group sync, all against the same Keycloak.
 
 See [Getting Started](docs/Getting-Started.md) and [Testing](docs/Testing.md)
 for prerequisites, configuration, make options, and CI behavior.

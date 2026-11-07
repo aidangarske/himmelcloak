@@ -23,7 +23,7 @@ services:
           - keycloak.test
 
   tester:
-    image: himmelcloak-tester:ci
+    image: ${TESTER_IMAGE:-himmelcloak-tester:ci}
     build:
       context: ../..
       dockerfile: tests/build/Dockerfile
@@ -31,7 +31,7 @@ services:
       KEYCLOAK_URL: https://keycloak.test:8443
       KEYCLOAK_CA: /work/tests/keycloak/.generated/ca.pem
       CARGO_HOME: /tmp/himmelcloak-cargo
-      CARGO_TARGET_DIR: /tmp/himmelcloak-target
+      CARGO_TARGET_DIR: /tmp/himmelcloak-target/${DISTRO:-default}
     volumes:
       - ../..:/work
       - cargo-target:/tmp/himmelcloak-target
