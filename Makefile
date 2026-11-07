@@ -1,35 +1,53 @@
 .PHONY: build test demo clean help image unit lint shell test-live test-live-verbose \
 	oracle-up oracle-down pam-smoke native local-build local-all-features \
-	local-test local-lint fmt
+	local-test local-lint fmt test-distros
 .DEFAULT_GOAL := build
+
+DISTROS = debian-12 ubuntu-24.04 opensuse-leap-16.0 opensuse-tumbleweed \
+	sle-bci-16.0 rockylinux-9 fedora
+export DISTRO
+ifneq ($(DISTRO),)
+ifeq ($(filter $(DISTRO),$(DISTROS)),)
+$(error DISTRO must be one of: $(DISTROS))
+endif
+export TESTER_IMAGE := himmelcloak-tester:$(DISTRO)
+endif
 
 COMPOSE = docker compose -f tests/keycloak/docker-compose.yml
 IN_DOCKER = $(COMPOSE) run --rm --no-deps --entrypoint /usr/bin/env tester
 
-##@ Everything runs in Docker; the host needs only Docker, Compose v2, and openssl
+##@ Everything runs in Docker; the host needs only Docker, Compose v2, and openssl.
 
 build: image ## Build every crate (the default)
 	$(IN_DOCKER) cargo build --locked --workspace
 
 test: ## Run every check: unit tests, lint, then the live Keycloak suite
 	$(MAKE) unit lint
-	tests/keycloak/run.sh; status=$$?; $(COMPOSE) down -v; exit $$status
+	tests/keycloak/run.sh; status=$$?; $(COMPOSE) down; exit $$status
 
 demo: ## Log alice in to a real Keycloak with the CLI and show the server's events
 	tests/keycloak/demo.sh
 
-clean: ## Stop Keycloak and remove the test containers and volumes
+test-distros: ## Run make test on every supported distro, one after another
+	@for distro in $(DISTROS); do \
+		echo "==> $$distro"; $(MAKE) --no-print-directory test DISTRO=$$distro || exit 1; \
+	done
+
+clean: ## Stop Keycloak and remove the test containers and build cache
 	$(COMPOSE) down -v
 
 help: ## Show every target
 	@awk 'BEGIN {FS = ":.*## "} \
 		/^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} \
 		/^[a-z-]+:.*## / {printf "  \033[36mmake %-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@echo
+	@echo "DISTRO values: $(DISTROS)"
+	@echo "Example: make test DISTRO=opensuse-leap-16.0"
 
 ##@ Individual steps
 
-image: ## Build the tester image (Rust, pinned wolfSSL, wolfSSL-backed curl)
-	$(COMPOSE) build tester
+image: ## Build the tester image for the default or DISTRO distribution
+	tests/keycloak/tester-image.sh
 
 unit: image ## Unit and integration tests only
 	$(IN_DOCKER) cargo test --locked --workspace --tests
