@@ -34,7 +34,10 @@ realm=himmelcloak-test
 client=himmelcloak-test-client
 redirect=http://127.0.0.1:8845/himmelcloak/callback
 password=correct-horse-battery-staple
-kc_curl=(curl --silent --show-error --fail --cacert "$ca" --resolve keycloak.test:8443:127.0.0.1)
+host_port=$(docker compose -f "$script_dir/docker-compose.yml" port keycloak 8443)
+host_port=${host_port##*:}
+kc_curl=(curl --silent --show-error --fail --cacert "$ca"
+    --connect-to "keycloak.test:8443:127.0.0.1:$host_port")
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

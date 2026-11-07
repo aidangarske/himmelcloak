@@ -474,6 +474,8 @@ mod terminal_tests {
                 master
                     .write_all(SECRET.as_bytes())
                     .expect("queue partial password without pressing Enter");
+                // The kernel moves pty input to the reader asynchronously; let it land before the flush.
+                std::thread::sleep(Duration::from_millis(200));
                 // SAFETY: this is the PID of our running subprocess.
                 assert_eq!(
                     unsafe { libc::kill(child.0.id() as libc::pid_t, signal) },

@@ -16,7 +16,8 @@ for Dave. After changing `tests/keycloak/realm-export.json`, run
 
 Run `make test-live` for the moving `latest` Keycloak image or set `KEYCLOAK_IMAGE` to another tag.
 Each local run recreates the Keycloak container so realm import uses the current fixture.
-Run `make oracle-down` afterward to remove the test server and its state.
+Run `make clean` afterward to remove the test server and its state. `make test`
+runs the unit tests, lint, and this suite, then removes the containers itself.
 
 Run `tests/keycloak/run.sh --verbose` (or `make test-live-verbose`) to see
 Himmelcloak's client steps and Keycloak's `LOGIN`/`LOGIN_ERROR` and
