@@ -17,4 +17,4 @@ workspace = true
 
 [dependencies]
 himmelcloak = { path = "../.." }
-toml = "0.8"
+toml = "1.2"
