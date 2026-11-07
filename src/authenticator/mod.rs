@@ -66,7 +66,29 @@ pub struct WebAuthnAssertion {
     pub user_handle: Option<Vec<u8>>,
 }
 
+/// Registration options supported by a caller-owned authenticator.
+pub struct WebAuthnCreateRequest {
+    pub rp_id: String,
+    /// COSE algorithm identifiers offered by the relying party (ES256 is -7).
+    pub algorithms: Vec<i32>,
+    pub exclude_credentials: Vec<CredentialDescriptor>,
+    pub user_verification: UserVerification,
+    pub resident_key_required: bool,
+}
+
+/// Public registration material. The caller supplies clientDataJSON separately.
+pub struct WebAuthnRegistration {
+    pub credential_id: Vec<u8>,
+    /// CBOR attestation object, including the credential public key.
+    pub attestation_object: Vec<u8>,
+}
+
 /// Caller-owned key-touch. Sync for now; revisit if a backend needs async.
 pub trait WebAuthnAdapter {
+    /// Register a credential if supported by this backend.
+    fn make_credential(&self, _req: &WebAuthnCreateRequest) -> crate::Result<WebAuthnRegistration> {
+        Err(crate::Error::UnsupportedFactor)
+    }
+
     fn get_assertion(&self, req: &WebAuthnGetRequest) -> crate::Result<WebAuthnAssertion>;
 }

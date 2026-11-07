@@ -83,8 +83,8 @@ workflows expose new native and Keycloak releases immediately.
 
 The `himmelcloak-webauthn` client binds a separate test flow that requires a
 password followed by WebAuthn. The `passkey-test` user has a preloaded public
-credential in `realm-export.json`; no key registration is performed during the
-suite. Existing password-only clients retain their flows.
+credential in `realm-export.json`; this seeded-credential scenario requires no
+registration. Existing password-only clients retain their flows.
 
 `software-credential.json` contains the matching disposable P-256 test key
 (private scalar 1, the standard generator point), credential ID, and RP ID
@@ -103,6 +103,22 @@ not implement the public WebAuthn flow driver. The normal live-suite commands
 and stable/nightly CI jobs enable `webauthn-virtual` and include this scenario.
 Recreate the server before rerunning: Keycloak persists the signature counter,
 while a new fixture signer starts at zero.
+
+A separate `fresh_credential_registers_and_signs_in` scenario uses
+`passkey-registration`, whose realm entry contains only a password and the
+`webauthn-register` required action. The authenticator generates a random key,
+returns a `none` attestation object, and posts it with the actual registration
+challenge and origin. After exchanging the registration callback for verified
+tokens, a new login with a separate cookie jar signs in using that same key and
+verifies the returned user's identity. Keycloak must advertise the newly
+registered credential ID. No admin API or seeded public key is used for this
+scenario. The assertion counter begins at one after registration.
+
+The existing stable/nightly live commands include this test automatically under
+`webauthn-virtual`. Recreate the realm before rerunning: the required action is
+removed and the random public key persists in Keycloak after a successful run.
+The narrow stock-template parsers are test-only; they do not complete the
+production WebAuthn page handler.
 
 For a targeted unit run, including malformed requests and fixture consistency:
 

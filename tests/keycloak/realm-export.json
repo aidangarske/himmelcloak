@@ -71,6 +71,18 @@
       ]
     },
     {
+      "username": "passkey-registration",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Registration",
+      "lastName": "Test",
+      "email": "registration@example.invalid",
+      "requiredActions": ["webauthn-register"],
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false}
+      ]
+    },
+    {
       "username": "passkey-test",
       "enabled": true,
       "emailVerified": true,
