@@ -24,7 +24,8 @@
 //! then validates the `[pam]` Keycloak connection and the `[identity]` mapping
 //! rules; a document is only usable for login after that succeeds. Other tables,
 //! such as the CLI's `[sync]` and `[login]`, are left to their own readers.
-//! [`ConfigDocument::load_trusted`] refuses files another user could change.
+//! [`ConfigDocument::load_trusted`] refuses files that are not root-owned or that
+//! another user could change.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -49,7 +50,7 @@ pub enum ConfigError {
     Read(io::Error),
     TooLarge,
     Malformed,
-    /// The file is a symlink, not a regular file, not owned by this user, or
+    /// The file is a symlink, not a regular file, not owned by root, or
     /// writable by group or others.
     Untrusted,
     Invalid(&'static str),
@@ -111,11 +112,18 @@ impl ConfigDocument {
         Self::read_from(File::open(path).map_err(ConfigError::Read)?)
     }
 
-    /// Like [`load`](Self::load), but only from a regular file owned by the
-    /// effective user (root in a login program) that group and others cannot
-    /// write. Symlinks are refused. The checks use the opened descriptor, so the
-    /// file cannot be swapped between the check and the read.
+    /// Like [`load`](Self::load), but only from a regular, root-owned file that
+    /// group and others cannot write. Symlinks are refused. Root is required even
+    /// when PAM runs as an ordinary user (a screen locker, for example), so a
+    /// user-owned file is never trusted. The checks use the opened descriptor, so
+    /// the file cannot be swapped between the check and the read.
     pub fn load_trusted(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        Self::load_owned_by(path, 0)
+    }
+
+    /// [`load_trusted`](Self::load_trusted) with the required owner as a
+    /// parameter, so tests can check both acceptance and rejection as any user.
+    fn load_owned_by(path: impl AsRef<Path>, owner: u32) -> Result<Self, ConfigError> {
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
@@ -125,9 +133,7 @@ impl ConfigDocument {
                 _ => ConfigError::Read(error),
             })?;
         let meta = file.metadata().map_err(ConfigError::Read)?;
-        // SAFETY: geteuid has no preconditions.
-        let euid = unsafe { libc::geteuid() };
-        if !meta.is_file() || meta.uid() != euid || meta.mode() & 0o022 != 0 {
+        if !meta.is_file() || meta.uid() != owner || meta.mode() & 0o022 != 0 {
             return Err(ConfigError::Untrusted);
         }
         Self::read_from(file)
@@ -416,13 +422,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn trusted_load_accepts_only_owned_files_others_cannot_write() {
-        use std::os::unix::fs::{symlink, PermissionsExt};
+    fn current_euid() -> u32 {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() }
+    }
+
+    fn owned_file(contents: &str, mode: u32) -> TestFile {
+        use std::os::unix::fs::PermissionsExt;
         let file = TestFile::new();
-        std::fs::write(&file.0, VALID).unwrap();
-        std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(ConfigDocument::load_trusted(&file.0)
+        std::fs::write(&file.0, contents).unwrap();
+        std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(mode)).unwrap();
+        file
+    }
+
+    #[test]
+    fn trusted_load_accepts_only_owner_files_others_cannot_write() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let me = current_euid();
+        let file = owned_file(VALID, 0o644);
+        assert!(ConfigDocument::load_owned_by(&file.0, me)
             .unwrap()
             .pam_settings()
             .is_ok());
@@ -430,7 +448,7 @@ mod tests {
         for mode in [0o664, 0o646, 0o666] {
             std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(mode)).unwrap();
             assert!(matches!(
-                ConfigDocument::load_trusted(&file.0),
+                ConfigDocument::load_owned_by(&file.0, me),
                 Err(ConfigError::Untrusted)
             ));
         }
@@ -439,37 +457,88 @@ mod tests {
         let link = TestFile::new();
         symlink(&file.0, &link.0).unwrap();
         assert!(matches!(
-            ConfigDocument::load_trusted(&link.0),
+            ConfigDocument::load_owned_by(&link.0, me),
             Err(ConfigError::Untrusted)
         ));
         assert!(matches!(
-            ConfigDocument::load_trusted(std::env::temp_dir()),
+            ConfigDocument::load_owned_by(std::env::temp_dir(), me),
             Err(ConfigError::Untrusted)
         ));
         let missing = TestFile::new();
         assert!(matches!(
-            ConfigDocument::load_trusted(&missing.0),
+            ConfigDocument::load_owned_by(&missing.0, me),
             Err(ConfigError::Read(_))
         ));
         assert!(ConfigError::Untrusted
             .to_string()
-            .contains("not writable by others"));
+            .contains("owned by root and not writable by others"));
+    }
+
+    #[test]
+    fn trusted_load_rejects_a_file_owned_by_another_user() {
+        let me = current_euid();
+        let file = owned_file(VALID, 0o644);
+        let someone_else = if me == u32::MAX { 0 } else { me + 1 };
+        assert!(matches!(
+            ConfigDocument::load_owned_by(&file.0, someone_else),
+            Err(ConfigError::Untrusted)
+        ));
+    }
+
+    #[test]
+    fn trusted_load_requires_root_even_when_pam_runs_as_a_user() {
+        let me = current_euid();
+        let file = owned_file(VALID, 0o644);
+        if me == 0 {
+            // As root (the CI container), a root-owned file is accepted and the
+            // same file handed to an unprivileged user is not.
+            assert!(ConfigDocument::load_trusted(&file.0).is_ok());
+            std::os::unix::fs::chown(&file.0, Some(65534), Some(65534)).unwrap();
+        }
+        // As any other user (a screen locker, or a developer's test run), a file
+        // that user owns must not be trusted.
+        assert!(matches!(
+            ConfigDocument::load_trusted(&file.0),
+            Err(ConfigError::Untrusted)
+        ));
     }
 
     #[test]
     fn trusted_load_still_enforces_size_and_syntax() {
-        use std::os::unix::fs::PermissionsExt;
-        let file = TestFile::new();
-        std::fs::write(&file.0, " ".repeat(MAX_CONFIG_BYTES + 1)).unwrap();
-        std::fs::set_permissions(&file.0, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let me = current_euid();
+        let file = owned_file(&" ".repeat(MAX_CONFIG_BYTES + 1), 0o600);
         assert!(matches!(
-            ConfigDocument::load_trusted(&file.0),
+            ConfigDocument::load_owned_by(&file.0, me),
             Err(ConfigError::TooLarge)
         ));
         std::fs::write(&file.0, "[pam").unwrap();
         assert!(matches!(
-            ConfigDocument::load_trusted(&file.0),
+            ConfigDocument::load_owned_by(&file.0, me),
             Err(ConfigError::Malformed)
         ));
+    }
+
+    /// Every TOML example in the crate README must pass validation. Examples
+    /// that show only `[identity]` reuse the README's `[pam]` table.
+    #[test]
+    fn readme_configuration_examples_are_valid() {
+        let readme = include_str!("../README.md");
+        let blocks: Vec<&str> = readme
+            .split("```toml\n")
+            .skip(1)
+            .map(|rest| rest.split("```").next().unwrap())
+            .collect();
+        assert!(blocks.len() >= 2, "README examples not found");
+        let pam = blocks[0].split("[identity]").next().unwrap();
+        for block in blocks {
+            let source = if block.contains("[pam]") {
+                block.to_owned()
+            } else {
+                format!("{pam}{block}")
+            };
+            if let Err(error) = settings(&source) {
+                panic!("README example rejected ({error}):\n{source}");
+            }
+        }
     }
 }

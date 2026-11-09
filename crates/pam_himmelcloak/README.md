@@ -52,8 +52,9 @@ the crate needs no PAM development headers.
 
 The module reads one root-owned file, `/etc/himmelcloak/himmelcloak.toml`
 (mode 0644, no secrets). `ConfigDocument::load_trusted` refuses symlinks,
-non-regular files, files owned by another user, and files group or others can
-write. Reads are capped at 64 KiB, and error messages never repeat the file's
+non-regular files, files not owned by root, and files group or others can
+write. Root ownership is required even when PAM runs as an ordinary user, such
+as a screen locker, so a user can never substitute their own file. Reads are capped at 64 KiB, and error messages never repeat the file's
 contents. Other tables in the same file, such as the CLI's `[sync]` and
 `[login]`, are ignored here.
 
@@ -67,11 +68,22 @@ client_id = "linux-login"
 [identity]
 claim = "preferred_username"   # or "email", or "sub" (explicit mode only)
 mode = "same-name"             # or "explicit"
+```
 
-# Optional rules. In explicit mode, only listed identities may sign in.
+In explicit mode, only listed identities may sign in:
+
+```toml
+[identity]
+claim = "email"
+mode = "explicit"
+
 [[identity.map]]
 keycloak = "alice@example.org"
 local = "alice"
+
+[[identity.map]]
+keycloak = "bob@example.org"
+local = "robert"
 ```
 
 `[pam]` uses the same server, realm, and client checks as the core library

@@ -63,10 +63,32 @@ pub type ConvCallback = unsafe extern "C" fn(
 ) -> c_int;
 
 /// `struct pam_conv`, supplied by the login program.
+///
+/// The fields are private, so safe code cannot build one: a `PamConv` comes
+/// either from libpam through [`conversation_from_handle`] or from the unsafe
+/// [`PamConv::from_raw`]. Both require the callback to follow the Linux-PAM
+/// conversation contract, which is what lets [`converse`] be a safe function.
 #[repr(C)]
 pub struct PamConv {
-    pub conv: Option<ConvCallback>,
-    pub appdata_ptr: *mut c_void,
+    conv: Option<ConvCallback>,
+    appdata_ptr: *mut c_void,
+}
+
+impl PamConv {
+    /// Wrap a conversation callback and its application data.
+    ///
+    /// # Safety
+    ///
+    /// `conv` must follow the [pam_conv(3)] contract for the lifetime of the
+    /// value: it may be called with `appdata_ptr`, it reads only the messages it
+    /// is given, and when it returns `PAM_SUCCESS` it stores a malloc'd array of
+    /// exactly `num_msg` responses whose non-null `resp` strings are malloc'd,
+    /// NUL-terminated, writable, and owned by the caller afterwards.
+    ///
+    /// [pam_conv(3)]: https://man7.org/linux/man-pages/man3/pam_conv.3.html
+    pub unsafe fn from_raw(conv: Option<ConvCallback>, appdata_ptr: *mut c_void) -> Self {
+        Self { conv, appdata_ptr }
+    }
 }
 
 /// One entry per message: input prompts return text, display-only messages return `None`.
@@ -98,8 +120,9 @@ pub unsafe fn conversation_from_handle<'a>(pamh: *mut c_void) -> Result<&'a PamC
     if status != PAM_SUCCESS || item.is_null() {
         return Err(PAM_CONV_ERR);
     }
-    // SAFETY: Linux-PAM stores a struct pam_conv for PAM_CONV and keeps it alive
-    // for the handle's lifetime.
+    // SAFETY: Linux-PAM stores the application's struct pam_conv for PAM_CONV and
+    // keeps it alive for the handle's lifetime. Applications that load PAM modules
+    // supply a callback meeting the contract documented on PamConv::from_raw.
     Ok(unsafe { &*item.cast::<PamConv>() })
 }
 
@@ -144,8 +167,9 @@ pub fn converse(conv: &PamConv, messages: &[Message]) -> Result<Vec<Answer>, c_i
     if status != PAM_SUCCESS || responses.is_null() {
         return Err(PAM_CONV_ERR);
     }
-    // SAFETY: on success Linux-PAM applications return a malloc'd array with one
-    // response per message, and ownership passes to the module.
+    // SAFETY: a PamConv can only be created under the pam_conv contract (see
+    // PamConv::from_raw), so on success this is a malloc'd array with one
+    // response per message, and ownership has passed to the module.
     let responses = unsafe { Responses::take(responses, messages.len()) };
     responses.answers(messages)
 }
@@ -268,10 +292,9 @@ pub(crate) mod tests {
         }
 
         pub fn conv(&self) -> PamConv {
-            PamConv {
-                conv: Some(scripted),
-                appdata_ptr: std::ptr::from_ref(self).cast_mut().cast(),
-            }
+            // SAFETY: `scripted` follows the pam_conv contract (calloc'd array and
+            // strings), and the script outlives every PamConv a test builds from it.
+            unsafe { PamConv::from_raw(Some(scripted), std::ptr::from_ref(self).cast_mut().cast()) }
         }
     }
 
@@ -398,10 +421,8 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_callback_or_response_array_fails() {
-        let conv = PamConv {
-            conv: None,
-            appdata_ptr: std::ptr::null_mut(),
-        };
+        // SAFETY: a missing callback is never called.
+        let conv = unsafe { PamConv::from_raw(None, std::ptr::null_mut()) };
         let prompt = [message(MessageStyle::HiddenInput, "Password: ")];
         assert_eq!(converse(&conv, &prompt).unwrap_err(), PAM_CONV_ERR);
 
