@@ -91,7 +91,9 @@ local = "robert"
 
 ### Identity mapping rules
 
-The verified token claim named by `claim` identifies the user:
+The rules live in the core crate, `himmelcloak::identity`, so the PAM module
+and the NSS sync job apply the same `[identity]` table and agree on account
+names. The verified token claim named by `claim` identifies the user:
 
 - **same-name:** the local account has the same name as the claim value,
   unless a `[[identity.map]]` rule says otherwise.
@@ -99,8 +101,8 @@ The verified token claim named by `claim` identifies the user:
   everyone else is denied.
 
 Local names must start with a lowercase letter and use only lowercase letters,
-digits, `_`, `-`, `.`, or `@` (up to 64 characters), the same names the sync job
-writes for the NSS module. Nothing ever maps to `root`.
+digits, `_`, `-`, `.`, or `@` (up to 64 characters), checked by the shared
+`valid_local_name`. Nothing ever maps to `root`.
 
 The configuration is rejected if:
 
@@ -113,10 +115,15 @@ The configuration is rejected if:
 - in same-name mode, a rule renames an identity to an account that a Keycloak
   user of that name would also reach, unless that name has its own rule
 
-This proposed format needs confirmation from the NSS (HC-50) and core owners.
-The rules only choose an account name. Checking that the account exists and
-is served by the Himmelcloak NSS source, so a Keycloak name can never take over
-an unrelated local account, belongs to the account checks in HC-42.
+The rules only choose an account name. The account checks in HC-42 are planned
+to make sure the login lands on the right account:
+
+- same-name logins only reach accounts served by the Himmelcloak NSS source; a
+  local account that happens to share the name is ignored
+- an explicit rule may deliberately associate an existing local account
+- the token's `sub` must match the Keycloak ID the sync snapshot stores for that
+  local name, so a renamed Keycloak user or a mapper change cannot land on
+  someone else's account
 
 ## Validation
 

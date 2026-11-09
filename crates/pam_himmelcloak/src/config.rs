@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::identity::{IdentityRules, IdentityTable};
+use himmelcloak::identity::{IdentityRules, IdentityTable};
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/himmelcloak/himmelcloak.toml";
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
@@ -353,7 +353,10 @@ mod tests {
         assert_eq!(settings.keycloak.realm, "test");
         assert_eq!(settings.keycloak.client_id, "linux-login");
         assert_eq!(settings.keycloak.ca_bundle, None);
-        assert_eq!(settings.identity.claim(), crate::identity::Claim::Email);
+        assert_eq!(
+            settings.identity.claim(),
+            himmelcloak::identity::Claim::Email
+        );
 
         let with_ca = settings_with("ca_bundle = '/etc/himmelcloak/ca.pem'");
         assert_eq!(

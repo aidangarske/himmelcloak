@@ -22,7 +22,6 @@
 
 pub mod config;
 pub mod conversation;
-pub mod identity;
 pub mod pam_conv;
 #[cfg(any(test, feature = "conversation-selftest"))]
 mod selftest;

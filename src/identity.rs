@@ -20,13 +20,31 @@
  */
 //! Administrator rules that map a verified Keycloak identity to a local account.
 //!
-//! The `[identity]` table chooses which verified token claim names the user and
-//! how that name becomes a Linux account. Anyone the rules do not cover is
-//! denied. Rules never map to `root`.
+//! The `[identity]` table in `/etc/himmelcloak/himmelcloak.toml` chooses which
+//! verified token claim names the user and how that name becomes a Linux
+//! account. Anyone the rules do not cover is denied. Rules never map to `root`.
+//!
+//! These rules live in the core crate so every component applies the same
+//! table: the PAM module uses them to pick the account a login lands on, and
+//! the NSS sync job should use them to name the accounts it writes. If the two
+//! disagreed, an email or rename rule would point logins at accounts NSS never
+//! has.
+//!
+//! Deserialize the `[identity]` table into an [`IdentityTable`], then validate it
+//! with [`IdentityRules::from_table`]:
+//!
+//! ```
+//! use himmelcloak::identity::{IdentityRules, IdentityTable};
+//!
+//! let table: IdentityTable = serde_json::from_str(r#"{"mode": "same-name"}"#).unwrap();
+//! let rules = IdentityRules::from_table(table).unwrap();
+//! assert_eq!(rules.local_account("alice"), Some("alice"));
+//! assert_eq!(rules.local_account("root"), None);
+//! ```
 //!
 //! This module only decides the account name. Checking that the account exists
-//! and is served by the Himmelcloak NSS source, so a Keycloak name can never
-//! take over an unrelated local account, is part of the account checks (HC-42).
+//! and belongs to the identity that signed in is part of the PAM account checks
+//! (HC-42).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -57,10 +75,11 @@ pub struct IdentityRules {
     map: BTreeMap<String, String>,
 }
 
-/// The `[identity]` table as written in the configuration file.
+/// The `[identity]` table as written in the configuration file. Unknown keys
+/// are rejected. Validate it with [`IdentityRules::from_table`] before use.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct IdentityTable {
+pub struct IdentityTable {
     #[serde(default = "default_claim")]
     claim: String,
     #[serde(default = "default_mode")]
@@ -84,8 +103,10 @@ fn default_mode() -> String {
     "same-name".into()
 }
 
-/// Linux account names accepted as mapping targets. This matches the names the
-/// sync job writes for the NSS module and never allows `root`.
+/// Linux account names Himmelcloak accepts: a lowercase letter first, then
+/// lowercase letters, digits, `_`, `-`, `.`, or `@`, up to 64 bytes, and never
+/// `root`. The PAM module and the NSS sync job share this rule so they agree on
+/// which account names exist.
 pub fn valid_local_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -101,7 +122,9 @@ fn valid_keycloak_identity(value: &str) -> bool {
 }
 
 impl IdentityRules {
-    pub(crate) fn from_table(table: IdentityTable) -> Result<Self, &'static str> {
+    /// Validate a deserialized `[identity]` table. Errors are fixed text that
+    /// never repeats configuration values.
+    pub fn from_table(table: IdentityTable) -> Result<Self, &'static str> {
         let claim = match table.claim.as_str() {
             "preferred_username" => Claim::PreferredUsername,
             "email" => Claim::Email,
