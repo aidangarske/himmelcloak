@@ -26,7 +26,11 @@
 //! so they run inside the crate. The live suite runs both with
 //! `cargo test --lib --test live_keycloak -- --ignored`, and they need `KEYCLOAK_URL` and
 //! `KEYCLOAK_CA`.
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(all(feature = "password", feature = "totp"))]
@@ -36,12 +40,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::authn::totp::{hotp, totp, OtpAlgorithm};
 use crate::client::{PublicClientApplication, Start};
 use crate::config::Config;
-use crate::error::Error;
+use crate::error::{Error, Result};
 use crate::flow::classify::PageKind;
 use crate::flow::fetch::{self, Fetched, Redirect};
 use crate::flow::form::{extract, Form};
-use crate::flow::{driver, AuthFlow, AuthStep, DEFAULT_LOGIN_TIMEOUT};
-use crate::transport::CurlTransport;
+use crate::flow::{driver, Answer, AuthFlow, AuthStep, Challenge, DEFAULT_LOGIN_TIMEOUT};
+use crate::transport::{CurlTransport, HttpTransport, Method, Request, Response};
 
 const PASSWORD: &str = "correct-horse-battery-staple";
 #[cfg(all(feature = "password", feature = "totp"))]
@@ -99,11 +103,13 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
     trace("submit alice's login form with the correct password");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
     let form = login_form(&app, &transport, &mut flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             &transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", PASSWORD)],
+            deadline,
         )
         .await
         .unwrap();
@@ -119,11 +125,13 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
     trace("submit alice's login form with a wrong password");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
     let form = login_form(&app, &transport, &mut flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             &transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", "wrong-password")],
+            deadline,
         )
         .await
         .unwrap();
@@ -147,11 +155,13 @@ async fn live_code_exchange_returns_verified_tokens_and_a_wrong_code_is_rejected
     trace("log alice in and exchange the callback's code");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
     let form = login_form(&app, &transport, &mut flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             &transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", PASSWORD)],
+            deadline,
         )
         .await
         .unwrap();
@@ -193,11 +203,13 @@ async fn log_in(
     flow: &mut AuthFlow,
 ) -> Redirect {
     let form = login_form(app, transport, flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", PASSWORD)],
+            deadline,
         )
         .await
         .unwrap();
@@ -294,6 +306,64 @@ async fn live_code_held_past_its_lifespan_is_rejected() {
     );
     assert!(!flow.is_active());
     trace("Keycloak refused the stale code");
+}
+
+/// Fails the first form post as if Keycloak could not be reached, sending nothing, and passes
+/// every other request to the real transport.
+struct UnreachableOnce {
+    inner: CurlTransport,
+    failed: AtomicBool,
+}
+
+impl HttpTransport for UnreachableOnce {
+    fn send(
+        &self,
+        request: Request,
+    ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+        if matches!(request.method, Method::Post) && !self.failed.swap(true, Ordering::SeqCst) {
+            let refused = Error::Unreachable("injected: connection refused".to_owned());
+            return Box::pin(async move { Err(refused) });
+        }
+        self.inner.send(request)
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+async fn live_password_login_survives_a_form_post_that_never_reached_keycloak() {
+    let config = config();
+    let transport = Arc::new(UnreachableOnce {
+        inner: CurlTransport::new(config.ca_bundle.clone(), config.timeout).unwrap(),
+        failed: AtomicBool::new(false),
+    });
+    let app = PublicClientApplication::with_transport(config, transport.clone())
+        .await
+        .unwrap();
+
+    trace("log alice in while the first post of her login form cannot reach Keycloak");
+    let (mut flow, first) = app.initiate_auth_flow(Start::default()).await.unwrap();
+    assert!(matches!(first, AuthStep::Challenge(Challenge::Username)));
+    let next = app
+        .continue_auth_flow(&mut flow, Answer::Username("alice".to_owned()))
+        .await
+        .unwrap();
+    assert!(matches!(next, AuthStep::Challenge(Challenge::Password)));
+    let step = app
+        .continue_auth_flow(&mut flow, Answer::Password(PASSWORD.to_owned()))
+        .await
+        .unwrap();
+    assert!(
+        transport.failed.load(Ordering::SeqCst),
+        "the first post must have failed"
+    );
+    let AuthStep::Complete(tokens) = step else {
+        panic!("the retried form must complete the login");
+    };
+    assert!(tokens
+        .verified_subject
+        .as_deref()
+        .is_some_and(|subject| !subject.is_empty()));
+    trace("the form was sent once more and the login completed with verified tokens");
 }
 
 #[tokio::test]
