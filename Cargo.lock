@@ -212,6 +212,7 @@ dependencies = [
  "serde_json",
  "signature",
  "tokio",
+ "toml",
  "url",
  "wolfssl-wolfcrypt",
  "zeroize",
@@ -473,7 +474,10 @@ name = "pam_himmelcloak"
 version = "0.0.0"
 dependencies = [
  "himmelcloak",
+ "libc",
+ "serde",
  "toml",
+ "zeroize",
 ]
 
 [[package]]

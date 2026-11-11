@@ -218,7 +218,8 @@ make local-lint
 ```
 
 The previous native prefix is left intact. See the [PAM module notes](../crates/pam_himmelcloak/README.md)
-for HC-40's message translation and configuration-parsing boundary.
+for the PAM conversation, the `[pam]` and `[identity]` configuration, and the
+PAM stack tests.
 
 The test realm's user is `alice` with password `correct-horse-battery-staple`. These credentials
 are for the disposable Docker realm only.
