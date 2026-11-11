@@ -201,6 +201,7 @@ async fn fresh_credential_registers_and_signs_in() {
             panic!("expected login page")
         };
         let (_, login) = form::extract(&page).unwrap();
+        let deadline = flow.deadline();
         let reply = login
             .submit(
                 &transport,
@@ -209,6 +210,7 @@ async fn fresh_credential_registers_and_signs_in() {
                     ("username", "passkey-registration"),
                     ("password", "correct-horse-battery-staple"),
                 ],
+                deadline,
             )
             .await
             .unwrap();
