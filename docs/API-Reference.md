@@ -77,12 +77,23 @@ public-client login flow. See [Group sync](Getting-Started.md#group-sync) for CL
 
 With `webauthn-virtual`, create a fresh `SoftwareAuthenticator::new(rp_id)` and
 call its `WebAuthnAdapter::make_credential(&WebAuthnCreateRequest)` method.
-The request carries the RP ID, offered COSE algorithms, excluded credential IDs,
-user-verification policy, and whether a resident key is required. The backend
-supports ES256 (`-7`), explicit credentials, and simulated user presence. Required
+The request carries RP and user entities, the SHA-256 hash of the exact
+`clientDataJSON` being submitted, offered COSE algorithms, excluded credential
+IDs, user-verification policy, and whether a resident key is required. The RP
+entity contains its ID and name; the user entity contains an opaque 1–64-byte
+handle, username, and display name. These inputs support CTAP and signed
+attestation backends even though `none` attestation does not sign the hash.
+The virtual backend requires a nonempty RP name and username and a valid user
+handle. It supports ES256 (`-7`), explicit credentials, and simulated user presence. Required
 UV or resident keys, or a list without ES256, returns `UnsupportedFactor`.
 A mismatched RP, excluded credential, malformed exclusion list, or credential
-already used for assertions returns `AuthenticationRejected`.
+already used for assertions or registration returns `AuthenticationRejected`.
+Exclusion lists accept at most 64 descriptors, each with a 1–1023-byte ID.
+
+Each instance permits one successful registration, independently of its
+assertion counter. Failed calls leave it available for a corrected request;
+a successful call consumes registration even if the caller never posts its
+response. A new registration attempt after success requires a fresh instance.
 
 `WebAuthnRegistration` contains the public credential ID and a CBOR attestation
 object with format `none`. It provides no device attestation signature. The

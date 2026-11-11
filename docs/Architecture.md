@@ -147,9 +147,18 @@ material as a CBOR `none` attestation object: UP and AT flags, zero counter and
 AAGUID, credential ID, and a COSE EC2/ES256 public key. It requires the bound RP,
 an offered ES256 algorithm, and a credential not in the exclude list. Required
 user verification and resident keys return `UnsupportedFactor`. Use one new
-instance per registration and retain it for assertions; registration does not
-advance the counter, and an instance used for assertions cannot be re-registered.
+instance per registration and retain it for assertions. A dedicated state flag
+records successful registration independently of the assertion counter, so a
+second registration is rejected even before any assertion. Failed registration
+requests leave state unchanged and can be corrected and retried. Registration
+does not advance the counter, and an instance used for assertions cannot be
+re-registered.
 Other adapters default to `UnsupportedFactor` for registration.
+
+The general creation request supplies RP and user entities and the hash of the
+exact clientDataJSON. These are passed through from Keycloak's registration
+options and the caller's challenge/origin-bound JSON, allowing CTAP and signed
+attestation adapters to implement the same interface.
 
 The live suite covers both a preloaded test credential and registration of a
 fresh random key followed by sign-in. Its test-only bridge handles Keycloak's

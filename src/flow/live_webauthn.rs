@@ -28,8 +28,9 @@ use crate::authenticator::{
     CredentialDescriptor, UserVerification, WebAuthnAdapter, WebAuthnGetRequest,
 };
 use crate::client::{PublicClientApplication, Start};
+use crate::error::{Error, Result};
 use crate::flow::{driver, fetch, form, AuthFlow, DEFAULT_LOGIN_TIMEOUT};
-use crate::transport::CurlTransport;
+use crate::transport::{CurlTransport, HttpTransport};
 
 fn property(html: &str, name: &str) -> String {
     let tail = html
@@ -180,7 +181,7 @@ async fn seeded_webauthn_credential_is_verified_and_tampering_is_rejected() {
 #[tokio::test]
 #[ignore = "requires a live Keycloak server and test CA"]
 async fn fresh_credential_registers_and_signs_in() {
-    use crate::authenticator::WebAuthnCreateRequest;
+    use crate::authenticator::{WebAuthnCreateRequest, WebAuthnRpEntity, WebAuthnUserEntity};
     let mut config = super::live::config();
     config.client_id = "himmelcloak-webauthn".into();
     let app = PublicClientApplication::with_config(config.clone())
@@ -209,7 +210,9 @@ async fn fresh_credential_registers_and_signs_in() {
             )
             .await
             .unwrap();
-        let page = required_action_page(reply, &transport, &mut flow).await;
+        let page = required_action_page(reply, &transport, &mut flow)
+            .await
+            .unwrap();
         let (action, fields) = if registering {
             let html = std::str::from_utf8(&page.body).unwrap();
             let (action, challenge) = registration_page(&page);
@@ -235,16 +238,27 @@ async fn fresh_credential_registers_and_signs_in() {
                 .collect();
             let resident_required = property(html, "requireResidentKey") == "Yes"
                 || property(html, "residentKey") == "required";
+            let client_data = client_data("webauthn.create", &challenge, &page.url);
+            let username = property(html, "username");
             let registration = authenticator
                 .make_credential(&WebAuthnCreateRequest {
-                    rp_id: property(html, "rpId"),
+                    rp: WebAuthnRpEntity {
+                        id: property(html, "rpId"),
+                        name: property(html, "rpEntityName"),
+                    },
+                    user: WebAuthnUserEntity {
+                        id: URL_SAFE_NO_PAD.decode(property(html, "userid")).unwrap(),
+                        name: username.clone(),
+                        // Stock Keycloak does not expose a separate display name here.
+                        display_name: username,
+                    },
+                    client_data_hash: crate::crypto::sha256(&client_data).unwrap(),
                     algorithms,
                     exclude_credentials: excluded,
                     user_verification: UserVerification::Discouraged,
                     resident_key_required: resident_required,
                 })
                 .unwrap();
-            let client_data = client_data("webauthn.create", &challenge, &page.url);
             (
                 action,
                 vec![
@@ -322,26 +336,31 @@ fn client_data(kind: &str, challenge: &str, url: &Url) -> Vec<u8> {
 
 async fn required_action_page(
     mut reply: fetch::Fetched,
-    transport: &CurlTransport,
+    transport: &dyn HttpTransport,
     flow: &mut AuthFlow,
-) -> fetch::Page {
+) -> Result<fetch::Page> {
+    let mut posted = true;
     for _ in 0..5 {
         match reply {
-            fetch::Fetched::Page(page) => return page,
+            fetch::Fetched::Page(page) => return Ok(page),
             fetch::Fetched::Redirect(redirect) => {
-                assert!(redirect.same_origin);
-                assert_eq!(redirect.location.scheme(), "https");
-                assert!(redirect
-                    .location
-                    .path()
-                    .ends_with("/login-actions/required-action"));
-                reply = fetch::get(transport, &mut flow.jar, redirect.location.clone())
-                    .await
-                    .unwrap();
+                // Repeating a POST is not equivalent to following its Location with a GET.
+                if (posted && redirect.kind.repeats_request())
+                    || !redirect.same_origin
+                    || redirect.location.scheme() != "https"
+                    || !redirect
+                        .location
+                        .path()
+                        .ends_with("/login-actions/required-action")
+                {
+                    return Err(Error::Protocol("unexpected redirect"));
+                }
+                posted = false;
+                reply = fetch::get(transport, &mut flow.jar, redirect.location.clone()).await?;
             }
         }
     }
-    panic!("too many required-action redirects")
+    Err(Error::Protocol("too many required-action redirects"))
 }
 
 fn registration_page(page: &fetch::Page) -> (Url, String) {
@@ -373,4 +392,109 @@ fn registration_page(page: &fetch::Page) -> (Url, String) {
     let challenge = property(html, "challenge");
     assert!(!URL_SAFE_NO_PAD.decode(&challenge).unwrap().is_empty());
     (action, challenge)
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use std::collections::VecDeque;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::flow::fetch::{Fetched, Redirect, RedirectKind};
+    use crate::transport::{Method, Request, Response};
+
+    const REQUIRED_ACTION: &str = "https://keycloak.test/realms/test/login-actions/required-action";
+
+    struct FakeTransport {
+        replies: Mutex<VecDeque<Response>>,
+        requests: Mutex<Vec<Url>>,
+    }
+
+    impl FakeTransport {
+        fn new(replies: Vec<Response>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into()),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl HttpTransport for FakeTransport {
+        fn send(
+            &self,
+            request: Request,
+        ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+            assert!(matches!(request.method, Method::Get));
+            assert!(request.body.is_empty());
+            self.requests.lock().unwrap().push(request.url.clone());
+            let reply = self
+                .replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected request");
+            Box::pin(async move { Ok(reply) })
+        }
+    }
+
+    fn initial_redirect(kind: RedirectKind) -> Fetched {
+        Fetched::Redirect(Redirect {
+            location: Url::parse(REQUIRED_ACTION).unwrap(),
+            same_origin: true,
+            kind,
+        })
+    }
+
+    #[tokio::test]
+    async fn post_redirects_that_repeat_the_request_are_rejected_without_fetching() {
+        for kind in [
+            RedirectKind::TemporaryRedirect,
+            RedirectKind::PermanentRedirect,
+        ] {
+            let transport = FakeTransport::new(Vec::new());
+            let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+            assert!(matches!(
+                required_action_page(initial_redirect(kind), &transport, &mut flow).await,
+                Err(Error::Protocol("unexpected redirect"))
+            ));
+            assert!(transport.requests.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn redirects_after_a_get_preserve_the_get_method() {
+        for status in [307, 308] {
+            let next = format!("{REQUIRED_ACTION}?step=registration");
+            let transport = FakeTransport::new(vec![
+                Response {
+                    status,
+                    headers: vec![("Location".into(), next.clone())],
+                    body: Vec::new(),
+                    cookies: Vec::new(),
+                },
+                Response {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: b"registration form".to_vec(),
+                    cookies: Vec::new(),
+                },
+            ]);
+            let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+            let page =
+                required_action_page(initial_redirect(RedirectKind::Found), &transport, &mut flow)
+                    .await
+                    .unwrap();
+            assert_eq!(page.url.as_str(), next);
+            assert_eq!(page.body, b"registration form");
+            assert_eq!(
+                *transport.requests.lock().unwrap(),
+                vec![
+                    Url::parse(REQUIRED_ACTION).unwrap(),
+                    Url::parse(&next).unwrap()
+                ]
+            );
+        }
+    }
 }

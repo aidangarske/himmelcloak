@@ -109,6 +109,10 @@ tokens, a new login with a separate cookie jar signs in using that same key and
 verifies the returned user's identity. Keycloak must advertise the newly
 registered credential ID. No admin API or seeded public key is used for this
 scenario. The assertion counter begins at one after registration.
+The creation request receives the actual clientDataJSON hash plus the RP and
+user entities from the server's options. Required-action redirects immediately
+after a form POST reject 307/308 rather than silently changing the method;
+redirects after a GET may preserve that GET. Unit tests cover both cases.
 
 The existing stable/nightly live commands include this test automatically under
 `webauthn-virtual`. Recreate the realm before rerunning: the required action is
@@ -125,6 +129,10 @@ For a targeted unit run, including malformed requests and fixture consistency:
 Malformed-input tests cover empty RP and credential IDs, oversized IDs, and
 excessive allow lists, including malformed entries alongside a matching ID.
 They also check accepted size boundaries and unchanged counters after failure.
+Registration tests cover 65 excluded descriptors and 1024-byte excluded IDs,
+the accepted 64-descriptor and 1023-byte boundaries, and a second registration
+before any assertion. Rejected requests preserve registration availability;
+successful registration consumes it without incrementing the assertion counter.
 
 ## Group synchronization
 
