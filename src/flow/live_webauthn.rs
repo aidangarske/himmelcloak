@@ -105,6 +105,7 @@ async fn seeded_webauthn_credential_is_verified_and_tampering_is_rejected() {
             panic!("expected a login form");
         };
         let (_, login) = form::extract(&page).unwrap();
+        let deadline = flow.deadline();
         let fetch::Fetched::Page(page) = login
             .submit(
                 &transport,
@@ -113,6 +114,7 @@ async fn seeded_webauthn_credential_is_verified_and_tampering_is_rejected() {
                     ("username", "passkey-test"),
                     ("password", "correct-horse-battery-staple"),
                 ],
+                deadline,
             )
             .await
             .unwrap()

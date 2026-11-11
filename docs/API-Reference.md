@@ -25,6 +25,10 @@ different native wolfSSL build and verifier configuration.
 Async calls require a Tokio runtime with its time driver enabled and return a
 transport error when polled without either. `Config::timeout` covers both
 waiting for transport capacity and the HTTP transfer.
+A request that never reached Keycloak (its host name did not resolve or no connection could
+be made, and nothing was sent) fails with `Error::Unreachable`, which is safe to repeat; other
+network failures are `Error::Transport`. A login form post that fails with `Unreachable` is
+sent once more before the error reaches the caller.
 The current runtime guard requires a Rust build with `panic=unwind`; a
 `panic=abort` build is rejected at compile time.
 
@@ -55,9 +59,12 @@ memory when dropped. `AuthFlow::cancel()` ends a login, and a login expires afte
 An answer that does not fit the waiting challenge (the wrong kind, a device or method the page did
 not offer, a WebAuthn credential outside the allow-list, or required-action fields that do not
 match exactly) is refused with a protocol error before anything is sent. Any error ends the login,
-and later steps then fail with `Protocol("login flow failed")`. The loop is in place, but no factor
-handlers are built yet, so `initiate_auth_flow` currently returns `UnsupportedFactor` at Keycloak's
-login page.
+and later steps then fail with `Protocol("login flow failed")`. Keycloak's username-and-password
+page is handled: it asks `Username` (unless `Start::login_hint` is set) and then `Password`. A wrong
+password ends the login with `AuthStep::Failed` carrying Keycloak's message, such as "Invalid
+username or password."; start a new login to try again, as `login` and `sshd` do for any PAM
+failure. Other pages, such as the one-time-code page, still return `UnsupportedFactor` until their
+handlers land.
 
 These types replace the earlier placeholders, which had no callers: `Challenge::Totp` and
 `Answer::Totp` became `OneTimeCode`, the SMS and email variants were removed until those

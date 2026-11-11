@@ -35,7 +35,7 @@ compose=(docker compose -f "$script_dir/docker-compose.yml")
 
 "$script_dir/bootstrap-cert.sh"
 "${compose[@]}" up -d --pull always --force-recreate keycloak
-"${compose[@]}" build tester
+"$script_dir/tester-image.sh"
 
 if [[ "$verbose" == 0 ]]; then
     "${compose[@]}" run --rm tester
@@ -45,7 +45,7 @@ fi
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 result=0
 "${compose[@]}" run --rm -e HIMMELCLOAK_TEST_VERBOSE=1 tester \
-    cargo test --locked --features webauthn-virtual --lib --test live_keycloak -- --ignored --nocapture || result=$?
+    cargo test --locked --workspace --features webauthn-virtual --lib --test live_keycloak -- --ignored --nocapture || result=$?
 
 echo 'Keycloak server authentication events:'
 "${compose[@]}" logs --no-color --since "$started" keycloak \

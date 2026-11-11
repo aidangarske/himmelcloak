@@ -18,19 +18,23 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
-//! Live Keycloak scenarios for flow pieces the public API cannot reach yet.
+//! Live Keycloak scenarios for flow pieces the public API does not expose on their own.
 //!
 //! Each feature needs a successful and a rejected scenario against stock Keycloak (charter
-//! section 2.7.7). Until `initiate_auth_flow` drives a whole login, these run inside the crate,
-//! and the live suite runs them with `cargo test --lib --test live_keycloak -- --ignored`. They
-//! need `KEYCLOAK_URL` and `KEYCLOAK_CA`, like `tests/live_keycloak.rs`.
+//! section 2.7.7). A whole login through the public API is tested in `tests/live_keycloak.rs`;
+//! these check the pieces underneath it (form submission, the callback, and the code exchange),
+//! so they run inside the crate. The live suite runs both with
+//! `cargo test --lib --test live_keycloak -- --ignored`, and they need `KEYCLOAK_URL` and
+//! `KEYCLOAK_CA`.
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(all(feature = "password", feature = "totp"))]
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use zeroize::Zeroizing;
 
 #[cfg(all(feature = "password", feature = "totp"))]
 use crate::authn::totp::{hotp, totp, OtpAlgorithm};
@@ -38,11 +42,10 @@ use crate::client::{PublicClientApplication, Start};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::flow::classify::PageKind;
-use crate::flow::factor::{Factors, PageFactor};
 use crate::flow::fetch::{self, Fetched, Redirect};
 use crate::flow::form::{extract, Form};
 use crate::flow::{driver, Answer, AuthFlow, AuthStep, Challenge, DEFAULT_LOGIN_TIMEOUT};
-use crate::transport::CurlTransport;
+use crate::transport::{CurlTransport, HttpTransport, Method, Request, Response};
 
 const PASSWORD: &str = "correct-horse-battery-staple";
 #[cfg(all(feature = "password", feature = "totp"))]
@@ -84,7 +87,7 @@ async fn login_form(
         panic!("expected Keycloak's login page");
     };
     let (kind, form) = extract(&page).unwrap();
-    assert!(matches!(kind, PageKind::UsernamePassword));
+    assert!(matches!(kind, PageKind::UsernamePassword { .. }));
     form
 }
 
@@ -100,11 +103,13 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
     trace("submit alice's login form with the correct password");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
     let form = login_form(&app, &transport, &mut flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             &transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", PASSWORD)],
+            deadline,
         )
         .await
         .unwrap();
@@ -120,11 +125,13 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
     trace("submit alice's login form with a wrong password");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
     let form = login_form(&app, &transport, &mut flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             &transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", "wrong-password")],
+            deadline,
         )
         .await
         .unwrap();
@@ -132,7 +139,7 @@ async fn live_password_form_reaches_the_callback_and_a_wrong_password_is_rejecte
         panic!("a wrong password must not redirect");
     };
     let (kind, _) = extract(&page).unwrap();
-    assert!(matches!(kind, PageKind::UsernamePassword));
+    assert!(matches!(kind, PageKind::UsernamePassword { .. }));
     trace("Keycloak rejected the wrong password and showed the login page again");
 }
 
@@ -148,11 +155,13 @@ async fn live_code_exchange_returns_verified_tokens_and_a_wrong_code_is_rejected
     trace("log alice in and exchange the callback's code");
     let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
     let form = login_form(&app, &transport, &mut flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             &transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", PASSWORD)],
+            deadline,
         )
         .await
         .unwrap();
@@ -194,11 +203,13 @@ async fn log_in(
     flow: &mut AuthFlow,
 ) -> Redirect {
     let form = login_form(app, transport, flow).await;
+    let deadline = flow.deadline();
     let fetched = form
         .submit(
             transport,
             &mut flow.jar,
             &[("username", "alice"), ("password", PASSWORD)],
+            deadline,
         )
         .await
         .unwrap();
@@ -297,89 +308,64 @@ async fn live_code_held_past_its_lifespan_is_rejected() {
     trace("Keycloak refused the stale code");
 }
 
-/// Stand-in for the password handler: asks the username, then the password, and posts both.
-struct PasswordStub;
-
-impl Factors for PasswordStub {
-    fn for_page(&self, kind: &PageKind) -> Option<&dyn PageFactor> {
-        matches!(kind, PageKind::UsernamePassword).then_some(self as &dyn PageFactor)
-    }
+/// Fails the first form post as if Keycloak could not be reached, sending nothing, and passes
+/// every other request to the real transport.
+struct UnreachableOnce {
+    inner: CurlTransport,
+    failed: AtomicBool,
 }
 
-impl PageFactor for PasswordStub {
-    fn challenges(&self, _kind: &PageKind, _login_hint: Option<&str>) -> Result<Vec<Challenge>> {
-        Ok(vec![Challenge::Username, Challenge::Password])
-    }
-
-    fn fields(
+impl HttpTransport for UnreachableOnce {
+    fn send(
         &self,
-        _kind: &PageKind,
-        answers: &[Answer],
-    ) -> Result<Vec<(String, Zeroizing<String>)>> {
-        Ok(answers
-            .iter()
-            .filter_map(|answer| match answer {
-                Answer::Username(value) => Some(("username", value)),
-                Answer::Password(value) => Some(("password", value)),
-                _ => None,
-            })
-            .map(|(name, value)| (name.to_owned(), Zeroizing::new(value.clone())))
-            .collect())
+        request: Request,
+    ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+        if matches!(request.method, Method::Post) && !self.failed.swap(true, Ordering::SeqCst) {
+            let refused = Error::Unreachable("injected: connection refused".to_owned());
+            return Box::pin(async move { Err(refused) });
+        }
+        self.inner.send(request)
     }
-}
-
-/// Answer the login page's two challenges and return the driver's next step.
-async fn sign_in(app: &PublicClientApplication, flow: &mut AuthFlow, password: &str) -> AuthStep {
-    let first = driver::begin(app, &PasswordStub, &Start::default(), flow)
-        .await
-        .unwrap();
-    assert!(matches!(first, AuthStep::Challenge(Challenge::Username)));
-    let next = driver::advance(
-        app,
-        &PasswordStub,
-        flow,
-        Answer::Username("alice".to_owned()),
-    )
-    .await
-    .unwrap();
-    assert!(matches!(next, AuthStep::Challenge(Challenge::Password)));
-    driver::advance(
-        app,
-        &PasswordStub,
-        flow,
-        Answer::Password(password.to_owned()),
-    )
-    .await
-    .unwrap()
 }
 
 #[tokio::test]
 #[ignore = "requires a live Keycloak server and test CA"]
-async fn live_driver_completes_a_login_and_asks_again_after_a_wrong_password() {
+async fn live_password_login_survives_a_form_post_that_never_reached_keycloak() {
     let config = config();
-    let app = PublicClientApplication::with_config(config.clone())
+    let transport = Arc::new(UnreachableOnce {
+        inner: CurlTransport::new(config.ca_bundle.clone(), config.timeout).unwrap(),
+        failed: AtomicBool::new(false),
+    });
+    let app = PublicClientApplication::with_transport(config, transport.clone())
         .await
         .unwrap();
 
-    trace("drive alice's login through the driver with a stand-in password handler");
-    let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
-    let AuthStep::Complete(tokens) = sign_in(&app, &mut flow, PASSWORD).await else {
-        panic!("a correct password must complete the login");
+    trace("log alice in while the first post of her login form cannot reach Keycloak");
+    let (mut flow, first) = app.initiate_auth_flow(Start::default()).await.unwrap();
+    assert!(matches!(first, AuthStep::Challenge(Challenge::Username)));
+    let next = app
+        .continue_auth_flow(&mut flow, Answer::Username("alice".to_owned()))
+        .await
+        .unwrap();
+    assert!(matches!(next, AuthStep::Challenge(Challenge::Password)));
+    let step = app
+        .continue_auth_flow(&mut flow, Answer::Password(PASSWORD.to_owned()))
+        .await
+        .unwrap();
+    assert!(
+        transport.failed.load(Ordering::SeqCst),
+        "the first post must have failed"
+    );
+    let AuthStep::Complete(tokens) = step else {
+        panic!("the retried form must complete the login");
     };
     assert!(tokens
         .verified_subject
         .as_deref()
         .is_some_and(|subject| !subject.is_empty()));
-    assert!(!flow.is_active());
-    trace("the driver followed Keycloak to the callback and returned verified tokens");
-
-    trace("answer the driver with a wrong password");
-    let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
-    let step = sign_in(&app, &mut flow, "wrong-password").await;
-    assert!(matches!(step, AuthStep::Challenge(Challenge::Username)));
-    assert!(flow.is_active());
-    trace("Keycloak showed the login page again, so the driver asks again");
+    trace("the form was sent once more and the login completed with verified tokens");
 }
+
 #[tokio::test]
 #[ignore = "requires a live Keycloak server and test CA"]
 #[cfg(all(feature = "password", feature = "totp"))]
@@ -428,6 +414,7 @@ async fn live_direct_grant_totp_accepts_and_rejects_fixture_users() {
         trace(&format!("Keycloak accepted {username}'s TOTP code"));
     }
 }
+
 #[tokio::test]
 #[ignore = "requires a live Keycloak server and test CA"]
 #[cfg(all(feature = "password", feature = "totp"))]
