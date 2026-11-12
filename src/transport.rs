@@ -50,6 +50,8 @@ pub(crate) struct Request {
     pub headers: Vec<String>,
     pub body: Vec<u8>,
     pub cookies: Vec<String>,
+    /// The latest moment any of this request may be sent, on top of the transport's own timeout.
+    pub send_by: Option<Instant>,
 }
 
 impl Request {
@@ -60,7 +62,14 @@ impl Request {
             headers: Vec::new(),
             body: Vec::new(),
             cookies: Vec::new(),
+            send_by: None,
         }
+    }
+
+    /// Never send this request, nor wait for a free transport slot, after `deadline`.
+    pub fn before(mut self, deadline: Instant) -> Self {
+        self.send_by = Some(deadline);
+        self
     }
 
     pub fn form(url: Url, fields: &[(&str, &str)]) -> Result<Self> {
@@ -87,6 +96,7 @@ impl Request {
             headers: vec!["Content-Type: application/x-www-form-urlencoded".to_owned()],
             body,
             cookies: Vec::new(),
+            send_by: None,
         })
     }
 }
@@ -304,9 +314,13 @@ impl HttpTransport for CurlTransport {
             if std::panic::catch_unwind(|| tokio::time::sleep(Duration::ZERO)).is_err() {
                 return Err(Error::Transport("Tokio time driver required".to_owned()));
             }
-            let deadline = Instant::now()
+            let timeout_deadline = Instant::now()
                 .checked_add(timeout)
                 .ok_or(Error::InvalidConfiguration("timeout too large"))?;
+            // The caller's deadline bounds waiting for a slot, connecting, and the transfer.
+            let deadline = request
+                .send_by
+                .map_or(timeout_deadline, |send_by| send_by.min(timeout_deadline));
             let deadline_async = tokio::time::Instant::from_std(deadline);
             let permit = tokio::time::timeout_at(deadline_async, slots.acquire_owned())
                 .await
@@ -446,7 +460,7 @@ fn send_blocking(
     if oversized.get() {
         return Err(Error::Protocol("HTTP response too large"));
     }
-    transfer_result.map_err(curl_error)?;
+    transfer_result.map_err(|error| transfer_error(error, sent_bytes))?;
     response.status = easy.response_code().map_err(curl_error)?;
     for cookie in easy.cookies().map_err(curl_error)?.iter() {
         let cookie =
@@ -460,23 +474,33 @@ fn curl_error(error: curl::Error) -> Error {
     Error::Transport(error.to_string())
 }
 
+/// Only a failure before any connection existed, with nothing sent, is safe to repeat.
+fn transfer_error(error: curl::Error, sent_bytes: usize) -> Error {
+    let never_connected = error.is_couldnt_resolve_host()
+        || error.is_couldnt_resolve_proxy()
+        || error.is_couldnt_connect();
+    if never_connected && sent_bytes == 0 {
+        Error::Unreachable(error.to_string())
+    } else {
+        curl_error(error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{mpsc, Arc};
-    use std::task::{Context, Poll, Wake, Waker};
+    use std::task::{Context, Poll, Waker};
     use std::thread;
 
     use super::{
-        active_wolfssl, curl_timeout, send_blocking, CurlTransport, HttpTransport, Request,
-        SecretHeaderList, MAX_HEADERS, MAX_RESPONSE,
+        active_wolfssl, curl_timeout, send_blocking, transfer_error, CurlTransport, HttpTransport,
+        Request, SecretHeaderList, MAX_HEADERS, MAX_RESPONSE,
     };
     use crate::error::Error;
     use tokio::sync::Semaphore;
     use url::Url;
-
-    struct NoopWake;
 
     #[test]
     fn positive_submillisecond_deadline_keeps_a_finite_native_timeout() {
@@ -493,10 +517,6 @@ mod tests {
         );
     }
 
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-
     #[test]
     fn missing_tokio_runtime_returns_an_error() {
         let transport = CurlTransport {
@@ -506,8 +526,7 @@ mod tests {
         };
         let request = Request::get(Url::parse("http://127.0.0.1:9/").unwrap());
         let mut future = transport.send(request);
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         assert!(matches!(
             future.as_mut().poll(&mut context),
             Poll::Ready(Err(Error::Transport(message))) if message == "Tokio runtime required"
@@ -682,6 +701,45 @@ mod tests {
         drop(occupied);
     }
 
+    #[tokio::test]
+    async fn a_request_is_never_dispatched_after_its_send_by_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let form = || Request::form(url.clone(), &[("password", "synthetic")]).unwrap();
+        let slots = Arc::new(Semaphore::new(1));
+        // The transport's own timeout is long; only the request's deadline can stop it.
+        let transport = CurlTransport {
+            ca_bundle: None,
+            timeout: std::time::Duration::from_secs(30),
+            slots: slots.clone(),
+        };
+        let timed_out = Some(Error::Transport("HTTP request timed out".to_owned()));
+
+        // Every slot stays busy until after the deadline.
+        let occupied = slots.clone().acquire_owned().await.unwrap();
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_millis(100);
+        assert_eq!(
+            transport.send(form().before(deadline)).await.err(),
+            timed_out
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        drop(occupied);
+
+        // A slot is free, but the deadline has already passed.
+        let passed = std::time::Instant::now();
+        assert_eq!(transport.send(form().before(passed)).await.err(), timed_out);
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            listener.accept().err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::WouldBlock),
+            "nothing may connect after the deadline"
+        );
+        assert_eq!(slots.available_permits(), 1);
+    }
+
     #[test]
     fn timed_out_queued_worker_releases_its_slot() {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -743,6 +801,60 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn every_never_connected_failure_and_only_those_is_unreachable() {
+        let unreachable = |code, sent| {
+            matches!(
+                transfer_error(curl::Error::new(code), sent),
+                Error::Unreachable(_)
+            )
+        };
+        for code in [
+            curl_sys::CURLE_COULDNT_RESOLVE_HOST,
+            curl_sys::CURLE_COULDNT_RESOLVE_PROXY,
+            curl_sys::CURLE_COULDNT_CONNECT,
+        ] {
+            assert!(unreachable(code, 0), "{code}");
+            // Once any byte went out, Keycloak may have the request: never repeat it.
+            assert!(!unreachable(code, 1), "{code}");
+        }
+        for code in [
+            curl_sys::CURLE_OPERATION_TIMEDOUT,
+            curl_sys::CURLE_PEER_FAILED_VERIFICATION,
+            curl_sys::CURLE_SSL_CONNECT_ERROR,
+            curl_sys::CURLE_GOT_NOTHING,
+            curl_sys::CURLE_SEND_ERROR,
+            curl_sys::CURLE_RECV_ERROR,
+        ] {
+            assert!(!unreachable(code, 0), "{code}");
+        }
+    }
+
+    #[test]
+    fn only_a_connection_never_made_is_unreachable() {
+        let timeout = std::time::Duration::from_secs(5);
+        let form = |url: &Url| Request::form(url.clone(), &[("password", "synthetic")]).unwrap();
+
+        // Nothing listens on the port: the connection is refused before a byte is sent.
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://{}/", closed.local_addr().unwrap())).unwrap();
+        drop(closed);
+        let refused = send_blocking(form(&url), None, timeout);
+        assert!(matches!(refused, Err(Error::Unreachable(_))));
+
+        // The server takes the request and closes without answering: it may have acted on it.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+        });
+        let dropped = send_blocking(form(&url), None, timeout);
+        server.join().unwrap();
+        assert!(matches!(dropped, Err(Error::Transport(_))));
     }
 
     #[test]

@@ -35,7 +35,7 @@ compose=(docker compose -f "$script_dir/docker-compose.yml")
 
 "$script_dir/bootstrap-cert.sh"
 "${compose[@]}" up -d --pull always --force-recreate keycloak
-"${compose[@]}" build tester
+"$script_dir/tester-image.sh"
 
 if [[ "$verbose" == 0 ]]; then
     "${compose[@]}" run --rm tester

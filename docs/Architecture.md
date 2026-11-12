@@ -64,10 +64,20 @@ ends the login as expired, a page is presented only if it returned 200, and
 only the client that began a login can continue it. Any refusal, error, or step
 dropped mid-request ends the login as failed. Each handler also receives
 `Start::login_hint`, so it can skip asking a username Keycloak already filled
-in. No factor handler is
-registered yet, so a real login stops at its first page with
-`UnsupportedFactor`; the password and one-time-code handlers plug in as their
-slices land.
+in.
+
+The password handler (`PasswordFactor` in `src/flow/factor.rs`) takes Keycloak's
+combined username-and-password page (`login.ftl`). It asks `Username`, unless
+the login hint filled it in, then `Password`, and posts both; `credentialId`
+keeps the page's own value (charter Table 2). When Keycloak refuses the answers
+it sends the login page back with a field error: `input-error` in the `base`
+theme, `input-error-<field>` in `keycloak.v2`. The classifier keys on those
+element IDs, never on the text, and the driver then ends the login with
+`AuthStep::Failed` carrying Keycloak's message, cleaned of control characters
+for the terminal. The caller starts a new login to try again. Identity-first
+pages and update-password are later password-slice work. A page without a
+handler, such as the one-time-code page until its slice lands, still ends the
+login with `UnsupportedFactor`.
 
 Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each
 `AuthFlow` owns its own cookie jar, which keeps libcurl's cookie lines per exact
@@ -88,6 +98,20 @@ charter Table 2 lists are posted (`username`, `password`, `credentialId` on the
 login page; `otp`, `selectedCredentialId` on the code page), starting from the
 page's own values. An answer for a field the page lacks, a repeated answer, or a
 device the page did not offer is refused before anything is sent.
+
+A form post that never reached Keycloak is sent once more after 250 ms, unless
+the login's time limit has passed by then: answers are never sent after the
+login expires, and the step ends with `Expired`. Both posts also carry that
+time limit to the transport, which stops waiting for a free connection slot,
+connecting, or sending once it passes, so a retry held up there is not sent
+late either. The
+transport reports that case as `Error::Unreachable`: the host name did not
+resolve or no connection could be made, and no byte of the request was sent.
+Every other failure (a timeout, a dropped connection, a certificate or TLS
+error, an HTTP error status) may have reached Keycloak, where a second post
+could count another password attempt or replay the session code, so it is
+returned as is and ends the login. Network faults beyond this one retry are
+tested separately (charter Table 26).
 
 Code exchange (`PublicClientApplication::exchange_code` in `src/client.rs`)
 redeems the callback's code at the token endpoint as a public client, sending
@@ -166,7 +190,7 @@ Docker. See [Testing](Testing.md).
 
 | Method | Intended mechanism | Current status |
 | --- | --- | --- |
-| Password | Direct Access Grant; later native flow | Direct grant implemented; native flow driver in place, password page handler pending; login form and code exchange live-tested with direct grants disabled |
+| Password | Direct Access Grant; native flow | Direct grant implemented; native username-and-password login through the public API, live-tested with direct grants disabled; identity-first and update-password pending |
 | TOTP / HOTP | wolfCrypt HMAC generation and verification; Direct Access Grant; later native flow | SHA-1, SHA-256, and SHA-512 generation and verification implemented; Keycloak credential persistence and live TOTP fixture pending |
 | WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter and seeded live assertion fixture implemented; public native flow pending |
 | SMS / email OTP | Native flow | Planned |
@@ -245,7 +269,8 @@ Bearer tokens, request forms, and HTTP response bodies retain the core's existin
 zeroization behavior. No HTTP or disabled-certificate-verification option is exposed.
 
 The disposable fixture grants only the `realm-management` `view-users` role, without
-`manage-users` or `realm-admin`. This role permits realm-wide reads; group-only access
+`manage-users` or `realm-admin`. Both fixture clients carry the `kc-admin-api` default
+client scope, which Keycloak 26.8.2 and later require on any Admin REST API token. This role permits realm-wide reads; group-only access
 is enforced by the application's request scope, not by a claim of per-group server
 isolation. Deployments requiring server-enforced isolation should configure Keycloak
 fine-grained group permissions separately.
