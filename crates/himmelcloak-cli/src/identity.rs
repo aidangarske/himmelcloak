@@ -19,7 +19,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! Local account mapping. Collisions reject the snapshot instead of reallocating IDs.
-use himmelcloak::admin::GroupMember;
+use himmelcloak::{
+    admin::GroupMember,
+    identity::{valid_local_name, Claim, IdentityRules, MappingMode},
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -99,16 +102,6 @@ fn uid(namespace: &str, id: &str, mapping: Mapping) -> u32 {
     mapping.uid_min + (hash % (u64::from(mapping.uid_max) - u64::from(mapping.uid_min) + 1)) as u32
 }
 
-fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name != "root"
-        && name.as_bytes()[0].is_ascii_lowercase()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-.@".contains(&b))
-}
-
 #[cfg(test)]
 pub(crate) fn map(
     namespace: &str,
@@ -117,7 +110,20 @@ pub(crate) fn map(
     passwd: &str,
     group: &str,
 ) -> Result<Snapshot, &'static str> {
-    map_with_history(namespace, members, mapping, passwd, group, None)
+    map_with_history(
+        namespace,
+        members,
+        mapping,
+        passwd,
+        group,
+        None,
+        &default_rules(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn default_rules() -> IdentityRules {
+    IdentityRules::from_table(toml::from_str("").unwrap()).unwrap()
 }
 
 pub(crate) fn map_with_history(
@@ -127,15 +133,16 @@ pub(crate) fn map_with_history(
     passwd: &str,
     group: &str,
     previous: Option<Snapshot>,
+    rules: &IdentityRules,
 ) -> Result<Snapshot, &'static str> {
     mapping.validate()?;
-    let mut reservations = if let Some(previous) = previous {
+    let (mut reservations, previous_users) = if let Some(previous) = previous {
         if previous.version != 1 || previous.namespace != namespace || previous.mapping != mapping {
             return Err("saved mapping settings changed; an explicit migration is required");
         }
-        previous.reservations
+        (previous.reservations, previous.users)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let mut reserved_uids = HashMap::new();
     let mut reserved_names = HashMap::new();
@@ -152,7 +159,7 @@ pub(crate) fn map_with_history(
             return Err("invalid saved UID reservation");
         }
         for name in &reservation.names {
-            if !valid_name(name)
+            if !valid_local_name(name)
                 || reserved_names
                     .insert(name.clone(), reservation.id.clone())
                     .is_some()
@@ -166,8 +173,16 @@ pub(crate) fn map_with_history(
         .enumerate()
         .map(|(i, r)| (r.id.clone(), i))
         .collect();
+    for user in previous_users {
+        if reserved_uids.get(&user.uid) != Some(&user.id)
+            || reserved_names.get(&user.username) != Some(&user.id)
+        {
+            return Err("saved user is missing a matching reservation");
+        }
+    }
     let mut local_names = HashSet::new();
     let mut local_uids = HashSet::new();
+    let mut local_group_members = HashSet::new();
     for line in passwd.lines().filter(|line| !line.is_empty()) {
         let fields: Vec<_> = line.split(':').collect();
         if fields.len() != 7 {
@@ -175,6 +190,9 @@ pub(crate) fn map_with_history(
         }
         local_names.insert(fields[0]);
         local_uids.insert(fields[2].parse::<u32>().map_err(|_| "invalid local UID")?);
+        if fields[3].parse::<u32>().map_err(|_| "invalid local GID")? == mapping.gid {
+            return Err("synced GID collides with a local account's primary GID");
+        }
     }
     for line in group.lines().filter(|line| !line.is_empty()) {
         let fields: Vec<_> = line.split(':').collect();
@@ -185,6 +203,7 @@ pub(crate) fn map_with_history(
         if gid == mapping.gid || fields[0] == "himmelcloak" {
             return Err("synced group collides with a local group");
         }
+        local_group_members.extend(fields[3].split(',').filter(|name| !name.is_empty()));
     }
     let mut names = HashSet::new();
     let mut ids = HashSet::new();
@@ -194,10 +213,17 @@ pub(crate) fn map_with_history(
         if !member.enabled {
             continue;
         }
-        if member.id.is_empty()
-            || !valid_name(&member.username)
-            || !ids.insert(member.id.clone())
-            || !names.insert(member.username.clone())
+        let claim = match rules.claim() {
+            Claim::PreferredUsername => &member.username,
+            Claim::Subject => &member.id,
+            Claim::Email => return Err("sync-users does not support the email identity claim"),
+        };
+        let username = match rules.local_account(claim) {
+            Some(name) => name.to_owned(),
+            None if rules.mode() == MappingMode::Explicit => continue,
+            None => return Err("invalid or duplicate synced identity"),
+        };
+        if member.id.is_empty() || !ids.insert(member.id.clone()) || !names.insert(username.clone())
         {
             return Err("invalid or duplicate synced identity");
         }
@@ -206,12 +232,13 @@ pub(crate) fn map_with_history(
             .get(&uid)
             .is_some_and(|owner| owner != &member.id)
             || reserved_names
-                .get(&member.username)
+                .get(&username)
                 .is_some_and(|owner| owner != &member.id)
         {
             return Err("synced identity would reuse a reserved UID or username");
         }
-        if local_names.contains(member.username.as_str())
+        if local_names.contains(username.as_str())
+            || local_group_members.contains(username.as_str())
             || local_uids.contains(&uid)
             || !uids.insert(uid)
         {
@@ -219,20 +246,20 @@ pub(crate) fn map_with_history(
         }
         if let Some(&index) = reservation_indexes.get(&member.id) {
             let reservation = &mut reservations[index];
-            if !reservation.names.contains(&member.username) {
-                reservation.names.push(member.username.clone());
+            if !reservation.names.contains(&username) {
+                reservation.names.push(username.clone());
             }
         } else {
             reservations.push(Reservation {
                 id: member.id.clone(),
                 uid,
-                names: vec![member.username.clone()],
+                names: vec![username.clone()],
             });
         }
         users.push(User {
             id: member.id,
-            home: format!("/home/{}", member.username),
-            username: member.username,
+            home: format!("/home/{username}"),
+            username,
             uid,
             gid: mapping.gid,
             shell: "/bin/bash".into(),
@@ -283,7 +310,16 @@ mod tests {
             gid: 200_000,
         };
         let first = map("realm", vec![member("one", "alice")], mapping, "", "").unwrap();
-        let empty = map_with_history("realm", vec![], mapping, "", "", Some(first)).unwrap();
+        let empty = map_with_history(
+            "realm",
+            vec![],
+            mapping,
+            "",
+            "",
+            Some(first),
+            &default_rules(),
+        )
+        .unwrap();
         assert!(empty.users.is_empty());
         let bytes = serde_json::to_vec(&empty).unwrap();
         assert!(map_with_history(
@@ -292,7 +328,8 @@ mod tests {
             mapping,
             "",
             "",
-            Some(serde_json::from_slice(&bytes).unwrap())
+            Some(serde_json::from_slice(&bytes).unwrap()),
+            &default_rules(),
         )
         .is_err());
         let returning = map_with_history(
@@ -302,6 +339,7 @@ mod tests {
             "",
             "",
             Some(serde_json::from_slice(&bytes).unwrap()),
+            &default_rules(),
         )
         .unwrap();
         assert_eq!(returning.users[0].uid, 200_000);
@@ -319,6 +357,7 @@ mod tests {
             "",
             "",
             Some(first),
+            &default_rules(),
         )
         .unwrap();
         let bytes = serde_json::to_vec(&renamed).unwrap();
@@ -328,7 +367,8 @@ mod tests {
             Mapping::default(),
             "",
             "",
-            Some(serde_json::from_slice(&bytes).unwrap())
+            Some(serde_json::from_slice(&bytes).unwrap()),
+            &default_rules(),
         )
         .is_err());
         assert!(map_with_history(
@@ -337,7 +377,8 @@ mod tests {
             Mapping::default(),
             "",
             "",
-            Some(renamed)
+            Some(renamed),
+            &default_rules(),
         )
         .is_err());
         let mut corrupt: Snapshot = serde_json::from_slice(&bytes).unwrap();
@@ -348,7 +389,8 @@ mod tests {
             Mapping::default(),
             "",
             "",
-            Some(corrupt)
+            Some(corrupt),
+            &default_rules(),
         )
         .is_err());
     }
@@ -390,6 +432,77 @@ mod tests {
         let snapshot = mapped(vec![disabled, member("two", "alice@example.test")]).unwrap();
         assert_eq!(snapshot.users.len(), 1);
         assert_eq!(snapshot.users[0].username, "alice@example.test");
+    }
+
+    #[test]
+    fn maps_explicit_subject_rules_and_skips_unmapped_members() {
+        let rules = IdentityRules::from_table(
+            toml::from_str(
+                "claim = 'sub'\nmode = 'explicit'\n[[map]]\nkeycloak = 'one'\nlocal = 'alice'",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let snapshot = map_with_history(
+            "realm",
+            vec![member("one", "keycloak-alice"), member("two", "bob")],
+            Mapping::default(),
+            "",
+            "",
+            None,
+            &rules,
+        )
+        .unwrap();
+        assert_eq!(snapshot.users.len(), 1);
+        assert_eq!(snapshot.users[0].id, "one");
+        assert_eq!(snapshot.users[0].username, "alice");
+        assert_eq!(snapshot.groups[0].members, ["alice"]);
+    }
+
+    #[test]
+    fn rejects_primary_gid_and_supplementary_group_collisions() {
+        let mapping = Mapping::default();
+        for (passwd, group) in [
+            ("local:x:1000:200000::/home/local:/bin/sh", ""),
+            ("", "local-admins:x:1000:local,alice"),
+        ] {
+            assert!(map(
+                "realm",
+                vec![member("one", "alice")],
+                mapping,
+                passwd,
+                group
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_saved_active_users_without_matching_reservations() {
+        let mapping = Mapping::default();
+        let first = map("realm", vec![member("one", "alice")], mapping, "", "").unwrap();
+        let bytes = serde_json::to_vec(&first).unwrap();
+        for corrupt in [
+            |snapshot: &mut Snapshot| snapshot.reservations.clear(),
+            |snapshot: &mut Snapshot| snapshot.users[0].uid += 1,
+            |snapshot: &mut Snapshot| snapshot.users[0].username = "bob".into(),
+        ] {
+            let mut saved = serde_json::from_slice(&bytes).unwrap();
+            corrupt(&mut saved);
+            assert_eq!(
+                map_with_history(
+                    "realm",
+                    vec![],
+                    mapping,
+                    "",
+                    "",
+                    Some(saved),
+                    &default_rules()
+                )
+                .unwrap_err(),
+                "saved user is missing a matching reservation",
+            );
+        }
     }
 
     #[test]
@@ -463,7 +576,16 @@ mod tests {
             let mut snapshot = mapped(vec![member("one", "alice")]).unwrap();
             let namespace = snapshot.namespace.clone();
             snapshot.reservations[0].names = names;
-            assert!(map_with_history(&namespace, vec![], mapping, "", "", Some(snapshot)).is_err());
+            assert!(map_with_history(
+                &namespace,
+                vec![],
+                mapping,
+                "",
+                "",
+                Some(snapshot),
+                &default_rules()
+            )
+            .is_err());
         }
     }
 }

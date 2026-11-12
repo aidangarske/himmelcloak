@@ -33,16 +33,18 @@ use std::{
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
-// Hold the directory lock across reading reservations, fetching, and publishing.
-// Closing the descriptor releases flock, including on error or process exit.
-pub(crate) struct State(File);
+// Keep the checked directory and private lock open through publication.
+pub(crate) struct State {
+    directory: File,
+    _lock: File,
+}
 
 impl State {
     pub fn save(&self, contents: &[u8]) -> io::Result<()> {
         if contents.len() > 64 * 1024 * 1024 {
             return Err(io::Error::other("snapshot is too large"));
         }
-        replace_in(&self.0, |file| file.write_all(contents))
+        replace_in(&self.directory, |file| file.write_all(contents))
     }
 
     pub fn lock(directory: &Path) -> io::Result<Self> {
@@ -58,18 +60,49 @@ impl State {
                 "unsafe sync directory",
             ));
         }
-        // SAFETY: file owns a live directory descriptor. No pointers are passed.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        // SAFETY: the checked directory descriptor and terminated name are valid.
+        let fd = unsafe {
+            libc::openat(
+                file.as_raw_fd(),
+                c".sync.lock".as_ptr(),
+                libc::O_RDWR
+                    | libc::O_CREAT
+                    | libc::O_NOFOLLOW
+                    | libc::O_CLOEXEC
+                    | libc::O_NONBLOCK,
+                0o600,
+            )
+        };
+        if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self(file))
+        // SAFETY: fd is newly opened and ownership passes to File.
+        let lock = unsafe { File::from_raw_fd(fd) };
+        let lock_meta = lock.metadata()?;
+        if !lock_meta.is_file()
+            || lock_meta.uid() != meta.uid()
+            || lock_meta.mode() & 0o7777 != 0o600
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe sync lock file",
+            ));
+        }
+        // SAFETY: lock owns a live regular-file descriptor.
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            directory: file,
+            _lock: lock,
+        })
     }
 
     pub fn load(&self) -> io::Result<Option<Vec<u8>>> {
         // SAFETY: the directory descriptor and terminated filename are valid.
         let fd = unsafe {
             libc::openat(
-                self.0.as_raw_fd(),
+                self.directory.as_raw_fd(),
                 c"users.json".as_ptr(),
                 libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
             )
@@ -85,7 +118,10 @@ impl State {
         // SAFETY: fd is newly opened and ownership passes to File.
         let file = unsafe { File::from_raw_fd(fd) };
         let meta = file.metadata()?;
-        if !meta.is_file() || meta.uid() != self.0.metadata()?.uid() || meta.mode() & 0o022 != 0 {
+        if !meta.is_file()
+            || meta.uid() != self.directory.metadata()?.uid()
+            || meta.mode() & 0o022 != 0
+        {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "unsafe saved snapshot",
@@ -109,7 +145,7 @@ fn save(directory: &Path, contents: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 fn replace(directory: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
     let state = State::lock(directory)?;
-    replace_in(&state.0, write)
+    replace_in(&state.directory, write)
 }
 
 // Keep preparation separate so permission and flush failures can be injected
@@ -214,6 +250,7 @@ mod tests {
         let original = parent.0.join("state");
         let moved = parent.0.join("moved");
         fs::create_dir(&original).unwrap();
+        fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
         let state = State::lock(&original).unwrap();
         fs::rename(&original, &moved).unwrap();
         fs::create_dir(&original).unwrap();
@@ -238,6 +275,39 @@ mod tests {
     }
 
     #[test]
+    fn sync_lock_is_private_even_when_the_directory_is_public() {
+        use std::{os::unix::process::CommandExt, process::Command};
+
+        let dir = Directory::new();
+        fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o755)).unwrap();
+        let state = State::lock(&dir.0).unwrap();
+        let path = dir.0.join(".sync.lock");
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        drop(state);
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            let status = Command::new("sh")
+                .args([
+                    "-c",
+                    "test -x \"$1\" && test ! -r \"$2\" && test ! -w \"$2\"",
+                    "sh",
+                ])
+                .arg(&dir.0)
+                .arg(&path)
+                .gid(65534)
+                .uid(65534)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(State::lock(&dir.0).is_err());
+        fs::remove_file(&path).unwrap();
+        symlink("missing", &path).unwrap();
+        assert!(State::lock(&dir.0).is_err());
+    }
+
+    #[test]
     fn publishes_a_complete_readable_snapshot() {
         let dir = Directory::new();
         save(&dir.0, b"old").unwrap();
@@ -245,7 +315,7 @@ mod tests {
         let path = dir.0.join("users.json");
         assert_eq!(fs::read(&path).unwrap(), b"new complete snapshot");
         assert_eq!(fs::metadata(path).unwrap().mode() & 0o777, 0o644);
-        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 2);
     }
 
     #[test]
@@ -261,7 +331,7 @@ mod tests {
             fs::read(dir.0.join("users.json")).unwrap(),
             b"last good snapshot"
         );
-        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 2);
     }
 
     #[test]
@@ -321,7 +391,7 @@ mod tests {
         fs::write(destination.join("keep"), b"old data").unwrap();
         assert!(save(&dir.0, b"new data").is_err());
         assert_eq!(fs::read(destination.join("keep")).unwrap(), b"old data");
-        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 3);
         assert!(replace(&dir.0.join("missing"), File::flush).is_err());
     }
 
@@ -369,7 +439,7 @@ mod tests {
                 fs::read(dir.0.join("users.json")).unwrap(),
                 b"last good snapshot"
             );
-            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 2);
         }
     }
 
@@ -378,6 +448,6 @@ mod tests {
         let dir = Directory::new();
         replace(&dir.0, File::flush).unwrap();
         assert!(fs::read(dir.0.join("users.json")).unwrap().is_empty());
-        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 2);
     }
 }

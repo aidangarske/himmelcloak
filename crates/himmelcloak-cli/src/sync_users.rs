@@ -19,7 +19,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! Read-only group synchronization for the existing CLI command.
-use himmelcloak::{admin::read_allowed_group, config::Config};
+use himmelcloak::{
+    admin::read_allowed_group,
+    config::Config,
+    identity::{Claim, IdentityRules, IdentityTable},
+};
 use serde::Deserialize;
 use std::{
     fs::OpenOptions,
@@ -58,7 +62,7 @@ impl SyncSettings {
     }
 }
 
-fn parse_settings(source: &str) -> SyncResult<SyncSettings> {
+fn parse_settings(source: &str) -> SyncResult<(SyncSettings, IdentityRules)> {
     let document: toml::Value =
         toml::from_str(source).map_err(|_| "malformed sync configuration")?;
     let settings: SyncSettings = document
@@ -79,7 +83,17 @@ fn parse_settings(source: &str) -> SyncResult<SyncSettings> {
     }
     settings.core_config()?;
     settings.mapping.validate()?;
-    Ok(settings)
+    let identity: IdentityTable = document
+        .get("identity")
+        .cloned()
+        .unwrap_or_else(|| toml::Value::Table(toml::Table::new()))
+        .try_into()
+        .map_err(|_| "invalid [identity] settings")?;
+    let rules = IdentityRules::from_table(identity)?;
+    if rules.claim() == Claim::Email {
+        return Err("sync-users does not support the email identity claim".into());
+    }
+    Ok((settings, rules))
 }
 
 /// Root's configuration must not be writable by another user; its secret is stricter.
@@ -141,7 +155,7 @@ pub fn run(path: &Path) -> SyncResult<()> {
     // SAFETY: geteuid has no pointer arguments or preconditions.
     require_root(unsafe { libc::geteuid() })?;
     let source = read_owned_file(path, false)?;
-    let settings = parse_settings(&source)?;
+    let (settings, rules) = parse_settings(&source)?;
     let secret = read_owned_file(&settings.client_secret_file, true)?;
     let config = settings.core_config()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -156,6 +170,7 @@ pub fn run(path: &Path) -> SyncResult<()> {
         &settings.state_directory,
         &namespace,
         settings.mapping,
+        &rules,
         || {
             runtime.block_on(read_allowed_group(
                 &config,
@@ -172,6 +187,7 @@ fn sync_to_directory(
     directory: &Path,
     namespace: &str,
     mapping: crate::identity::Mapping,
+    rules: &IdentityRules,
     fetch: impl FnOnce() -> himmelcloak::Result<Vec<himmelcloak::admin::GroupMember>>,
 ) -> SyncResult<usize> {
     let state = crate::local_files::State::lock(directory)?;
@@ -184,8 +200,9 @@ fn sync_to_directory(
     // Use local files directly: NSS lookups here could recurse into our own reader.
     let passwd = std::fs::read_to_string("/etc/passwd")?;
     let group = std::fs::read_to_string("/etc/group")?;
-    let mapped =
-        crate::identity::map_with_history(namespace, members, mapping, &passwd, &group, previous)?;
+    let mapped = crate::identity::map_with_history(
+        namespace, members, mapping, &passwd, &group, previous, rules,
+    )?;
     // Validate and serialize everything before touching the last good snapshot.
     let snapshot = serde_json::to_vec(&mapped)?;
     state.save(&snapshot)?;
@@ -231,6 +248,7 @@ mod tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
         let state = path.join("state");
         fs::create_dir(&state).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
         let secret = path.join("secret");
         fs::write(&secret, "hc49-disposable-test-secret").unwrap();
         fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
@@ -250,6 +268,7 @@ mod tests {
         config.insert("sync".into(), toml::Value::Table(settings.clone()));
         let config_path = path.join("himmelcloak.toml");
         fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).unwrap();
         run(&config_path).unwrap();
         let before = fs::read(state.join("users.json")).unwrap();
         let snapshot: crate::identity::Snapshot = serde_json::from_slice(&before).unwrap();
@@ -309,25 +328,32 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         let mapping = crate::identity::Mapping::default();
-        sync_to_directory(&directory, "test-realm", mapping, empty_group).unwrap();
+        let rules = crate::identity::default_rules();
+        sync_to_directory(&directory, "test-realm", mapping, &rules, empty_group).unwrap();
         let before = fs::read(directory.join("users.json")).unwrap();
         for error in [
             himmelcloak::Error::Transport("connection refused".into()),
             himmelcloak::Error::HttpStatus(503),
         ] {
-            assert!(sync_to_directory(&directory, "test-realm", mapping, || Err(error)).is_err());
+            assert!(
+                sync_to_directory(&directory, "test-realm", mapping, &rules, || Err(error))
+                    .is_err()
+            );
             assert_eq!(fs::read(directory.join("users.json")).unwrap(), before);
-            assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+            assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
         }
         let root = himmelcloak::admin::GroupMember {
             id: "root-id".into(),
             username: "root".into(),
             enabled: true,
         };
-        assert!(sync_to_directory(&directory, "test-realm", mapping, || Ok(vec![root])).is_err());
+        assert!(
+            sync_to_directory(&directory, "test-realm", mapping, &rules, || Ok(vec![root]))
+                .is_err()
+        );
         assert_eq!(fs::read(directory.join("users.json")).unwrap(), before);
         fs::write(directory.join("users.json"), b"broken history").unwrap();
-        assert!(sync_to_directory(&directory, "test-realm", mapping, empty_group).is_err());
+        assert!(sync_to_directory(&directory, "test-realm", mapping, &rules, empty_group).is_err());
         assert_eq!(
             fs::read(directory.join("users.json")).unwrap(),
             b"broken history"
@@ -357,9 +383,28 @@ mod tests {
 
     #[test]
     fn reads_only_the_sync_table_and_preserves_other_cli_settings() {
-        let settings = parse_settings(CONFIG).unwrap();
+        let (settings, rules) = parse_settings(CONFIG).unwrap();
         assert_eq!(settings.allowed_group_id, "allowed");
         assert_eq!(settings.core_config().unwrap().realm, "test");
+        assert_eq!(rules.claim(), Claim::PreferredUsername);
+        assert_eq!(rules.local_account("alice"), Some("alice"));
+    }
+
+    #[test]
+    fn validates_shared_identity_configuration() {
+        let source = format!(
+            "{CONFIG}\n[identity]\nclaim = 'sub'\nmode = 'explicit'\n[[identity.map]]\nkeycloak = 'id-1'\nlocal = 'alice'\n"
+        );
+        let (_, rules) = parse_settings(&source).unwrap();
+        assert_eq!(rules.claim(), Claim::Subject);
+        assert_eq!(rules.local_account("id-1"), Some("alice"));
+        for source in [
+            source.replace("local = 'alice'", "local = 'root'"),
+            format!("{CONFIG}\n[identity]\nclaim = 'email'\n"),
+            format!("{CONFIG}\n[identity]\nunknown = true\n"),
+        ] {
+            assert!(parse_settings(&source).is_err());
+        }
     }
 
     #[test]

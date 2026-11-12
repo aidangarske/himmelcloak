@@ -279,9 +279,10 @@ The sync job maps enabled members to non-root accounts and writes one versioned
 `/var/lib/himmelcloak/users.json` snapshot containing users, a shared group, and
 persistent UID/name reservations. The group and account lists commit together
 through a synced temporary file and atomic rename. Failed fetches, validation,
-or pre-rename writes keep the previous snapshot. The same checked directory
-descriptor is locked and used for loading and publishing, excluding overlapping
-syncs. A directory-sync error after rename cannot roll back the visible snapshot.
+or pre-rename writes keep the previous snapshot. The job opens a private lock
+file inside the checked directory to exclude overlapping syncs, then uses the
+directory descriptor for loading and publishing. A directory-sync error after
+rename cannot roll back the visible snapshot.
 
 The documented mapping and JSON format are proposed contracts for the later NSS
 reader. UIDs derive from the server/realm namespace and Keycloak ID in a reserved

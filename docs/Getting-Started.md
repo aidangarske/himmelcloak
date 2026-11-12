@@ -153,11 +153,17 @@ Optional overrides go in a `[sync.mapping]` table: `uid_min`, `uid_max`, and `gi
 Values below 1000 and above 2147483647 are rejected. Changing the range or
 server/realm namespace changes mappings and requires an account-data migration.
 
-Disabled members are omitted. Names must start with a lowercase ASCII letter,
-contain at most 64 bytes, and use lowercase letters, digits, `_`, `-`, `.`, or `@`.
-`root`, duplicate names/IDs, and UID collisions are rejected. Existing local
-usernames/UIDs and group names/GIDs are checked directly in `/etc/passwd` and
-`/etc/group`; other NSS sources are not queried. Homes are `/home/<username>`
+Disabled members are omitted. Sync applies the same top-level `[identity]`
+rules as PAM. The default uses the Keycloak username as the local account name.
+Explicit rules can map usernames or Keycloak user IDs (`claim = "sub"`) and
+omit identities without a rule. Sync rejects `claim = "email"` because the
+group member lookup does not supply that claim.
+
+Invalid same-name mappings, duplicate names/IDs, and UID collisions fail the
+sync. Local names follow the shared validation rules and cannot be `root`.
+Sync checks local usernames, UIDs, primary GIDs, group names and GIDs, and
+supplementary group memberships directly in `/etc/passwd` and `/etc/group`.
+Homes are `/home/<username>`
 and the shell is `/bin/bash`; no home directories or system accounts are created.
 The snapshot also stores the namespace, mapping settings, and `reservations`
 (`id`, `uid`, and every username used by that ID). Removing or disabling a
@@ -166,7 +172,8 @@ member retains its UID; another ID cannot reuse its UID or old usernames.
 Do not delete the snapshot to resolve collisions: that would discard its history.
 Changed mapping settings, unsupported versions, malformed state, or invalid
 reservations fail the sync and require an explicit administrator migration.
-History and active accounts are replaced together. A directory lock excludes
+History and active accounts are replaced together. A root-owned `.sync.lock`
+file with mode 0600 excludes
 overlapping syncs, and snapshots are limited to 64 MiB. Reservation history is
 not pruned automatically; reaching the limit fails without replacing the file.
 
