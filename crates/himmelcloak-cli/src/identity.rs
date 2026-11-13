@@ -396,6 +396,18 @@ mod tests {
     }
 
     #[test]
+    fn uid_matches_the_persisted_mapping() {
+        assert_eq!(
+            uid(
+                "https://example/realms/test",
+                "fixed-id",
+                Mapping::default()
+            ),
+            1_397_555_554
+        );
+    }
+
+    #[test]
     fn uid_survives_reordering_rename_and_other_members_leaving() {
         let first = mapped(vec![member("one", "alice"), member("two", "bob")]).unwrap();
         let next = mapped(vec![member("two", "bob"), member("one", "alice")]).unwrap();

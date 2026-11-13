@@ -179,7 +179,7 @@ pub fn run(path: &Path) -> SyncResult<()> {
             ))
         },
     )?;
-    println!("synced {count} group members");
+    println!("synced {count} local accounts");
     Ok(())
 }
 

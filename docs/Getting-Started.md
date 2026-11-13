@@ -133,7 +133,7 @@ directory with mode 0755 under a trusted parent. The command does not create it.
 The directory must not be a symlink or writable by group/others.
 
 Success saves a version-1 JSON object containing `users` and `groups` in
-`users.json` with mode 0644, then prints the enabled-user count. Each user has
+`users.json` with mode 0644, then prints the number of saved local accounts. Each user has
 `id`, `username`, `uid`, `gid`, `home`, and `shell`; the single `himmelcloak` group
 has `name`, `gid`, and `members`. Keeping both lists in one snapshot avoids
 publishing mismatched user and group generations. The command writes and syncs a
