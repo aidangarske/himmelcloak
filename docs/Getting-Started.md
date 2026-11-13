@@ -100,6 +100,7 @@ client_id = "linux-sync"
 allowed_group_id = "11111111-1111-4111-8111-111111111111"
 client_secret_file = "/etc/himmelcloak/admin-client.secret"
 # ca_bundle = "/etc/ssl/certs/private-keycloak-ca.pem"
+# state_directory = "/var/lib/himmelcloak"
 ```
 
 The server URL is the base URL before `/realms/<realm>` and may include a deployment
@@ -127,9 +128,54 @@ scripts/with-native.sh cargo build --locked -p himmelcloak-cli
 sudo /absolute/path/to/target/debug/himmelcloak-cli sync-users
 ```
 
-Success returns a JSON array of `{id, username, enabled}` objects. Failure exits
-nonzero with no partial JSON and no fallback to listing all users. Local account-file
-writing and system-login integration are not implemented by this stage.
+Provision `state_directory` (default `/var/lib/himmelcloak`) as a root-owned
+directory with mode 0755 under a trusted parent. The command does not create it.
+The directory must not be a symlink or writable by group/others.
+
+Success saves a version-1 JSON object containing `users` and `groups` in
+`users.json` with mode 0644, then prints the number of saved local accounts. Each user has
+`id`, `username`, `uid`, `gid`, `home`, and `shell`; the single `himmelcloak` group
+has `name`, `gid`, and `members`. Keeping both lists in one snapshot avoids
+publishing mismatched user and group generations. The command writes and syncs a
+temporary file in the same directory before replacing the old snapshot with a
+single rename. Fetch and pre-rename write failures preserve the previous file.
+A directory-sync failure after rename reports an error, but the complete new
+snapshot is already visible; its durability across power loss is uncertain.
+System-login integration is not implemented by this stage.
+
+The proposed mapping uses FNV-1a over the server/realm namespace, a zero byte,
+and the Keycloak user ID to select a UID in a reserved range. This is an ID
+selector, not cryptography. A rename or membership ordering change does not
+change the UID. Collisions fail the entire sync instead of probing another UID.
+The default UID range is 200000 through 2000199999, and the shared primary GID
+is 200000. Administrators must reserve these IDs across their identity sources.
+Optional overrides go in a `[sync.mapping]` table: `uid_min`, `uid_max`, and `gid`.
+Values below 1000 and above 2147483647 are rejected. Changing the range or
+server/realm namespace changes mappings and requires an account-data migration.
+
+Disabled members are omitted. Sync applies the same top-level `[identity]`
+rules as PAM. The default uses the Keycloak username as the local account name.
+Explicit rules can map usernames or Keycloak user IDs (`claim = "sub"`) and
+omit identities without a rule. Sync rejects `claim = "email"` because the
+group member lookup does not supply that claim.
+
+Invalid same-name mappings, duplicate names/IDs, and UID collisions fail the
+sync. Local names follow the shared validation rules and cannot be `root`.
+Sync checks local usernames, UIDs, primary GIDs, group names and GIDs, and
+supplementary group memberships directly in `/etc/passwd` and `/etc/group`.
+Homes are `/home/<username>`
+and the shell is `/bin/bash`; no home directories or system accounts are created.
+The snapshot also stores the namespace, mapping settings, and `reservations`
+(`id`, `uid`, and every username used by that ID). Removing or disabling a
+member removes the active account but keeps these reservations. A returning
+member retains its UID; another ID cannot reuse its UID or old usernames.
+Do not delete the snapshot to resolve collisions: that would discard its history.
+Changed mapping settings, unsupported versions, malformed state, or invalid
+reservations fail the sync and require an explicit administrator migration.
+History and active accounts are replaced together. A root-owned `.sync.lock`
+file with mode 0600 excludes
+overlapping syncs, and snapshots are limited to 64 MiB. Reservation history is
+not pruned automatically; reaching the limit fails without replacing the file.
 
 ## Build and test
 
