@@ -344,7 +344,8 @@ async fn required_action_page(
     flow: &mut AuthFlow,
 ) -> Result<fetch::Page> {
     let mut posted = true;
-    for _ in 0..5 {
+    let mut followed = 0;
+    loop {
         match reply {
             fetch::Fetched::Page(page) => return Ok(page),
             fetch::Fetched::Redirect(redirect) => {
@@ -359,12 +360,15 @@ async fn required_action_page(
                 {
                     return Err(Error::Protocol("unexpected redirect"));
                 }
+                if followed == 5 {
+                    return Err(Error::Protocol("too many required-action redirects"));
+                }
+                followed += 1;
                 posted = false;
                 reply = fetch::get(transport, &mut flow.jar, redirect.location.clone()).await?;
             }
         }
     }
-    Err(Error::Protocol("too many required-action redirects"))
 }
 
 fn registration_page(page: &fetch::Page) -> (Url, String) {
@@ -500,5 +504,85 @@ mod redirect_tests {
                 ]
             );
         }
+    }
+
+    fn required_action_url(step: usize) -> Url {
+        if step == 0 {
+            Url::parse(REQUIRED_ACTION).unwrap()
+        } else {
+            Url::parse(&format!("{REQUIRED_ACTION}?step={step}")).unwrap()
+        }
+    }
+
+    fn redirect_response(step: usize) -> Response {
+        Response {
+            status: [302, 307, 308][(step - 1) % 3],
+            headers: vec![("Location".into(), required_action_url(step).into())],
+            body: Vec::new(),
+            cookies: Vec::new(),
+        }
+    }
+
+    fn registration_response() -> Response {
+        Response {
+            status: 200,
+            headers: Vec::new(),
+            body: b"registration form".to_vec(),
+            cookies: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn pages_after_up_to_five_redirects_are_returned() {
+        for redirects in [0, 1, 4, 5] {
+            let (reply, responses) = if redirects == 0 {
+                (
+                    Fetched::Page(fetch::Page {
+                        url: required_action_url(0),
+                        status: 200,
+                        body: b"registration form".to_vec(),
+                    }),
+                    Vec::new(),
+                )
+            } else {
+                // The supplied POST response is redirect one; the final GET returns the page.
+                let mut responses: Vec<_> = (1..redirects).map(redirect_response).collect();
+                responses.push(registration_response());
+                (initial_redirect(RedirectKind::Found), responses)
+            };
+            let transport = FakeTransport::new(responses);
+            let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+            let page = required_action_page(reply, &transport, &mut flow)
+                .await
+                .unwrap();
+            assert_eq!(page.url, required_action_url(redirects.saturating_sub(1)));
+            assert_eq!(page.body, b"registration form");
+            assert_eq!(
+                *transport.requests.lock().unwrap(),
+                (0..redirects).map(required_action_url).collect::<Vec<_>>()
+            );
+            assert!(transport.replies.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn sixth_redirect_is_rejected_before_a_sixth_fetch() {
+        // The initial redirect plus five GET redirect responses total six redirects.
+        let mut responses: Vec<_> = (1..=5).map(redirect_response).collect();
+        responses.push(registration_response());
+        let transport = FakeTransport::new(responses);
+        let mut flow = AuthFlow::new(DEFAULT_LOGIN_TIMEOUT).unwrap();
+        assert!(matches!(
+            required_action_page(initial_redirect(RedirectKind::Found), &transport, &mut flow)
+                .await,
+            Err(Error::Protocol("too many required-action redirects"))
+        ));
+        assert_eq!(
+            *transport.requests.lock().unwrap(),
+            (0..5).map(required_action_url).collect::<Vec<_>>()
+        );
+        let replies = transport.replies.lock().unwrap();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies.front().unwrap().body, b"registration form");
     }
 }

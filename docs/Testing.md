@@ -123,7 +123,9 @@ scenario. The assertion counter begins at one after registration.
 The creation request receives the actual clientDataJSON hash plus the RP and
 user entities from the server's options. Required-action redirects immediately
 after a form POST reject 307/308 rather than silently changing the method;
-redirects after a GET may preserve that GET. Unit tests cover both cases.
+redirects after a GET may preserve that GET. Unit tests cover both cases and
+the five-redirect boundary: a page reached after the fifth redirect is accepted,
+while a sixth redirect is rejected before another request is sent.
 
 The existing stable/nightly live commands include this test automatically under
 `webauthn-virtual`. Recreate the realm before rerunning: the required action is
