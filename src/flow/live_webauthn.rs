@@ -143,7 +143,9 @@ async fn seeded_webauthn_credential_is_verified_and_tampering_is_rejected() {
         let data = URL_SAFE_NO_PAD.encode(assertion.authenticator_data);
         let signature = URL_SAFE_NO_PAD.encode(assertion.signature);
         let credential = URL_SAFE_NO_PAD.encode(assertion.credential_id);
-        let reply = fetch::post_form(
+        flow.ensure_active().unwrap();
+        let deadline = flow.deadline();
+        let reply = fetch::post_form_before(
             &transport,
             &mut flow.jar,
             action,
@@ -154,6 +156,7 @@ async fn seeded_webauthn_credential_is_verified_and_tampering_is_rejected() {
                 ("credentialId", &credential),
                 ("userHandle", ""),
             ],
+            deadline,
         )
         .await
         .unwrap();
@@ -314,7 +317,9 @@ async fn fresh_credential_registers_and_signs_in() {
             .iter()
             .map(|(key, value)| (*key, value.as_str()))
             .collect();
-        let reply = fetch::post_form(&transport, &mut flow.jar, action, &fields)
+        flow.ensure_active().unwrap();
+        let deadline = flow.deadline();
+        let reply = fetch::post_form_before(&transport, &mut flow.jar, action, &fields, deadline)
             .await
             .unwrap();
         let fetch::Fetched::Redirect(redirect) = reply else {
@@ -346,6 +351,7 @@ async fn required_action_page(
     let mut posted = true;
     let mut followed = 0;
     loop {
+        flow.ensure_active()?;
         match reply {
             fetch::Fetched::Page(page) => return Ok(page),
             fetch::Fetched::Redirect(redirect) => {
@@ -408,6 +414,7 @@ mod redirect_tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::flow::fetch::{Fetched, Redirect, RedirectKind};
@@ -418,6 +425,7 @@ mod redirect_tests {
     struct FakeTransport {
         replies: Mutex<VecDeque<Response>>,
         requests: Mutex<Vec<Url>>,
+        reply_after: Option<Instant>,
     }
 
     impl FakeTransport {
@@ -425,6 +433,7 @@ mod redirect_tests {
             Self {
                 replies: Mutex::new(replies.into()),
                 requests: Mutex::new(Vec::new()),
+                reply_after: None,
             }
         }
     }
@@ -443,7 +452,12 @@ mod redirect_tests {
                 .unwrap()
                 .pop_front()
                 .expect("unexpected request");
-            Box::pin(async move { Ok(reply) })
+            Box::pin(async move {
+                if let Some(deadline) = self.reply_after {
+                    tokio::time::sleep_until(deadline.into()).await;
+                }
+                Ok(reply)
+            })
         }
     }
 
@@ -529,6 +543,47 @@ mod redirect_tests {
             headers: Vec::new(),
             body: b"registration form".to_vec(),
             cookies: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_flows_do_not_follow_redirects_or_accept_pages() {
+        for reply in [
+            initial_redirect(RedirectKind::Found),
+            Fetched::Page(fetch::Page {
+                url: required_action_url(0),
+                status: 200,
+                body: b"registration form".to_vec(),
+            }),
+        ] {
+            let transport = FakeTransport::new(Vec::new());
+            let mut flow = AuthFlow::new(Duration::ZERO).unwrap();
+            assert!(matches!(
+                required_action_page(reply, &transport, &mut flow).await,
+                Err(Error::Expired)
+            ));
+            assert!(transport.requests.lock().unwrap().is_empty());
+            assert!(!flow.is_active());
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_after_the_deadline_do_not_continue_the_required_action() {
+        for response in [redirect_response(1), registration_response()] {
+            let mut flow = AuthFlow::new(Duration::from_secs(1)).unwrap();
+            let mut transport = FakeTransport::new(vec![response, registration_response()]);
+            transport.reply_after = Some(flow.deadline());
+            assert!(matches!(
+                required_action_page(initial_redirect(RedirectKind::Found), &transport, &mut flow)
+                    .await,
+                Err(Error::Expired)
+            ));
+            assert_eq!(
+                *transport.requests.lock().unwrap(),
+                vec![required_action_url(0)]
+            );
+            assert_eq!(transport.replies.lock().unwrap().len(), 1);
+            assert!(!flow.is_active());
         }
     }
 

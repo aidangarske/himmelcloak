@@ -126,6 +126,10 @@ after a form POST reject 307/308 rather than silently changing the method;
 redirects after a GET may preserve that GET. Unit tests cover both cases and
 the five-redirect boundary: a page reached after the fifth redirect is accepted,
 while a sixth redirect is rejected before another request is sent.
+Each response is checked against the flow deadline before accepting a page or
+following another redirect, and WebAuthn form submissions carry that deadline
+to the transport. Unit tests also cover an already expired flow sending no
+requests and expiry while waiting for a response preventing further requests.
 
 The existing stable/nightly live commands include this test automatically under
 `webauthn-virtual`. Recreate the realm before rerunning: the required action is
