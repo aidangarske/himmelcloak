@@ -90,8 +90,8 @@ workflows expose new native and Keycloak releases immediately.
 
 The `himmelcloak-webauthn` client binds a separate test flow that requires a
 password followed by WebAuthn. The `passkey-test` user has a preloaded public
-credential in `realm-export.json`; no key registration is performed during the
-suite. Existing password-only clients retain their flows.
+credential in `realm-export.json`; this seeded-credential scenario requires no
+registration. Existing password-only clients retain their flows.
 
 `software-credential.json` contains the matching disposable P-256 test key
 (private scalar 1, the standard generator point), credential ID, and RP ID
@@ -111,6 +111,32 @@ and stable/nightly CI jobs enable `webauthn-virtual` and include this scenario.
 Recreate the server before rerunning: Keycloak persists the signature counter,
 while a new fixture signer starts at zero.
 
+A separate `fresh_credential_registers_and_signs_in` scenario uses
+`passkey-registration`, whose realm entry contains only a password and the
+`webauthn-register` required action. The authenticator generates a random key,
+returns a `none` attestation object, and posts it with the actual registration
+challenge and origin. After exchanging the registration callback for verified
+tokens, a new login with a separate cookie jar signs in using that same key and
+verifies the returned user's identity. Keycloak must advertise the newly
+registered credential ID. No admin API or seeded public key is used for this
+scenario. The assertion counter begins at one after registration.
+The creation request receives the actual clientDataJSON hash plus the RP and
+user entities from the server's options. Required-action redirects immediately
+after a form POST reject 307/308 rather than silently changing the method;
+redirects after a GET may preserve that GET. Unit tests cover both cases and
+the five-redirect boundary: a page reached after the fifth redirect is accepted,
+while a sixth redirect is rejected before another request is sent.
+Each response is checked against the flow deadline before accepting a page or
+following another redirect, and WebAuthn form submissions carry that deadline
+to the transport. Unit tests also cover an already expired flow sending no
+requests and expiry while waiting for a response preventing further requests.
+
+The existing stable/nightly live commands include this test automatically under
+`webauthn-virtual`. Recreate the realm before rerunning: the required action is
+removed and the random public key persists in Keycloak after a successful run.
+The narrow stock-template parsers are test-only; they do not complete the
+production WebAuthn page handler.
+
 For a targeted unit run, including malformed requests and fixture consistency:
 
 ```sh
@@ -120,6 +146,10 @@ For a targeted unit run, including malformed requests and fixture consistency:
 Malformed-input tests cover empty RP and credential IDs, oversized IDs, and
 excessive allow lists, including malformed entries alongside a matching ID.
 They also check accepted size boundaries and unchanged counters after failure.
+Registration tests cover 65 excluded descriptors and 1024-byte excluded IDs,
+the accepted 64-descriptor and 1023-byte boundaries, and a second registration
+before any assertion. Rejected requests preserve registration availability;
+successful registration consumes it without incrementing the assertion counter.
 
 ## Group synchronization
 

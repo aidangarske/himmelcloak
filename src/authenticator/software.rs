@@ -27,9 +27,11 @@ const AUTHENTICATOR_DATA_LEN: usize = 37;
 const MAX_P256_DER_SIG_LEN: usize = 72;
 const FLAG_UP: u8 = 0x01;
 const FLAG_UV: u8 = 0x04;
+const FLAG_AT: u8 = 0x40;
 // Local resource limits for this single-credential virtual backend.
 const MAX_ALLOW_CREDENTIALS: usize = 64;
 const MAX_CREDENTIAL_ID_LEN: usize = 1023;
+const MAX_USER_HANDLE_LEN: usize = 64;
 
 // Keep signing-key access and counter updates private. Avoid Debug and Clone
 // because this state contains a private signing key.
@@ -41,6 +43,8 @@ struct InMemoryCredential {
     credential_id: Vec<u8>,
     // Starts at zero; increments only after assertion signing and encoding succeed.
     sign_count: u32,
+    // Registration is one-shot even before the first assertion advances the counter.
+    registered: bool,
 }
 
 /// A single-credential virtual authenticator for tests and headless development.
@@ -60,7 +64,10 @@ pub struct SoftwareAuthenticator {
 }
 
 impl SoftwareAuthenticator {
-    /// Provision one fresh credential locally, without a registration protocol.
+    /// Provision one fresh credential locally.
+    /// Use a new instance for each registration ceremony, then retain it for assertions.
+    /// [`super::WebAuthnAdapter::make_credential`] exports a `none` attestation object;
+    /// the caller owns the challenge, origin binding, clientDataJSON, and HTTP posting.
     pub fn new(rp_id: String) -> crate::Result<Self> {
         let credential = InMemoryCredential::new(rp_id)?;
         Ok(Self {
@@ -95,6 +102,7 @@ impl SoftwareAuthenticator {
                 rp_id: fixture["rpId"].as_str().unwrap().to_owned(),
                 credential_id: decode("credentialId"),
                 sign_count: 0,
+                registered: false,
             }),
         }
     }
@@ -124,6 +132,66 @@ impl SoftwareAuthenticator {
 }
 
 impl super::WebAuthnAdapter for SoftwareAuthenticator {
+    fn make_credential(
+        &self,
+        request: &super::WebAuthnCreateRequest,
+    ) -> crate::Result<super::WebAuthnRegistration> {
+        use signature::Keypair;
+        let mut credential = self
+            .credential
+            .try_borrow_mut()
+            .map_err(|_| crate::Error::Crypto)?;
+        if request.rp.id.is_empty()
+            || request.rp.id != credential.rp_id
+            || request.rp.name.is_empty()
+            || request.user.name.is_empty()
+            || request.user.id.is_empty()
+            || request.user.id.len() > MAX_USER_HANDLE_LEN
+            || request.exclude_credentials.len() > MAX_ALLOW_CREDENTIALS
+            || request.exclude_credentials.iter().any(|item| {
+                item.id.is_empty()
+                    || item.id.len() > MAX_CREDENTIAL_ID_LEN
+                    || item.id == credential.credential_id
+            })
+        {
+            return Err(crate::Error::AuthenticationRejected);
+        }
+        if !request.algorithms.contains(&-7)
+            || request.resident_key_required
+            || matches!(request.user_verification, super::UserVerification::Required)
+        {
+            return Err(crate::Error::UnsupportedFactor);
+        }
+        // A new instance provisions one key. Never re-register an already-used credential.
+        if credential.registered || credential.sign_count != 0 {
+            return Err(crate::Error::AuthenticationRejected);
+        }
+        let rp_hash = crate::crypto::sha256(credential.rp_id.as_bytes())?;
+        let mut data = build_assertion_authenticator_data(&rp_hash, FLAG_UP | FLAG_AT, 0).to_vec();
+        data.extend_from_slice(&[0; 16]); // No identifying AAGUID for this virtual backend.
+        let id_len =
+            u16::try_from(credential.credential_id.len()).map_err(|_| crate::Error::Crypto)?;
+        data.extend_from_slice(&id_len.to_be_bytes());
+        data.extend_from_slice(&credential.credential_id);
+        let public = credential.signing_key.verifying_key();
+        // Fixed COSE EC2 key: kty=2, alg=-7, crv=1, x and y are 32-byte coordinates.
+        data.extend_from_slice(&[0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20]);
+        data.extend_from_slice(&public.as_ref()[1..33]);
+        data.extend_from_slice(&[0x22, 0x58, 0x20]);
+        data.extend_from_slice(&public.as_ref()[33..65]);
+        // WebAuthn §6.5: fmt=none carries an empty statement, without an attestation signature.
+        // This fixed single-credential layout fits a CBOR byte string with one length byte.
+        let mut attestation = b"\xa3\x63fmt\x64none\x67attStmt\xa0\x68authData\x58".to_vec();
+        attestation.push(u8::try_from(data.len()).map_err(|_| crate::Error::Crypto)?);
+        attestation.extend_from_slice(&data);
+        let registration = super::WebAuthnRegistration {
+            credential_id: credential.credential_id.clone(),
+            attestation_object: attestation,
+        };
+        credential.registered = true;
+        Ok(registration)
+    }
+
     fn get_assertion(
         &self,
         request: &super::WebAuthnGetRequest,
@@ -226,6 +294,7 @@ impl InMemoryCredential {
             rp_id,
             credential_id,
             sign_count: 0,
+            registered: false,
         })
     }
 }
@@ -275,6 +344,233 @@ fn assertion_authenticator_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn registration_request() -> super::super::WebAuthnCreateRequest {
+        use super::super::{
+            UserVerification, WebAuthnCreateRequest, WebAuthnRpEntity, WebAuthnUserEntity,
+        };
+
+        WebAuthnCreateRequest {
+            rp: WebAuthnRpEntity {
+                id: "example.com".into(),
+                name: "Example".into(),
+            },
+            user: WebAuthnUserEntity {
+                id: b"test-user".to_vec(),
+                name: "test-user".into(),
+                display_name: "Test User".into(),
+            },
+            client_data_hash: [0xab; 32],
+            algorithms: vec![-7],
+            exclude_credentials: vec![],
+            user_verification: UserVerification::Preferred,
+            resident_key_required: false,
+        }
+    }
+
+    #[test]
+    fn registration_encodes_none_attestation_and_preserves_assertion_counter() {
+        use super::super::{
+            CredentialDescriptor, UserVerification, WebAuthnAdapter, WebAuthnGetRequest,
+        };
+        let authenticator = SoftwareAuthenticator::new("example.com".into()).unwrap();
+        let mut request = registration_request();
+        request.algorithms = vec![-257, -7];
+        let registration = authenticator.make_credential(&request).unwrap();
+        assert_eq!(registration.credential_id, authenticator.credential_id());
+        let object = &registration.attestation_object;
+        let prefix = b"\xa3\x63fmt\x64none\x67attStmt\xa0\x68authData\x58\xa4";
+        assert_eq!(&object[..prefix.len()], prefix);
+        let data = &object[prefix.len()..];
+        assert_eq!(data.len(), 164);
+        // Independent SHA-256("example.com").
+        assert_eq!(
+            &data[..32],
+            &[
+                0xa3, 0x79, 0xa6, 0xf6, 0xee, 0xaf, 0xb9, 0xa5, 0x5e, 0x37, 0x8c, 0x11, 0x80, 0x34,
+                0xe2, 0x75, 0x1e, 0x68, 0x2f, 0xab, 0x9f, 0x2d, 0x30, 0xab, 0x13, 0xd2, 0x12, 0x55,
+                0x86, 0xce, 0x19, 0x47
+            ]
+        );
+        assert_eq!(data[32], 0x41); // UP + AT, without UV.
+        assert_eq!(&data[33..53], &[0; 20]); // Initial counter and AAGUID.
+        assert_eq!(&data[53..55], &[0, 32]);
+        assert_eq!(&data[55..87], registration.credential_id);
+        assert_eq!(
+            &data[87..97],
+            &[0xa5, 1, 2, 3, 0x26, 0x20, 1, 0x21, 0x58, 0x20]
+        );
+        let public = authenticator.public_key();
+        assert_eq!(&data[97..129], &public[1..33]);
+        assert_eq!(&data[129..132], &[0x22, 0x58, 0x20]);
+        assert_eq!(&data[132..], &public[33..]);
+        assert_eq!(authenticator.credential.borrow().sign_count, 0);
+        assert!(matches!(
+            authenticator.make_credential(&request),
+            Err(crate::Error::AuthenticationRejected)
+        ));
+        assert_eq!(authenticator.credential.borrow().sign_count, 0);
+        let assertion = authenticator
+            .get_assertion(&WebAuthnGetRequest {
+                rp_id: request.rp.id.clone(),
+                client_data_hash: [0; 32],
+                allow_credentials: vec![CredentialDescriptor {
+                    id: authenticator.credential_id(),
+                }],
+                user_verification: UserVerification::Preferred,
+            })
+            .unwrap();
+        assert_eq!(&assertion.authenticator_data[33..], &1u32.to_be_bytes());
+        assert!(matches!(
+            authenticator.make_credential(&request),
+            Err(crate::Error::AuthenticationRejected)
+        ));
+    }
+
+    #[test]
+    fn registration_rejects_unsupported_options_and_excluded_credentials() {
+        use super::super::{CredentialDescriptor, UserVerification, WebAuthnAdapter};
+        let authenticator = SoftwareAuthenticator::new("example.com".into()).unwrap();
+        let valid = registration_request;
+        let mut wrong_rp = valid();
+        wrong_rp.rp.id = "other.example".into();
+        let mut excluded = valid();
+        excluded.exclude_credentials.push(CredentialDescriptor {
+            id: authenticator.credential_id(),
+        });
+        let mut malformed = valid();
+        malformed
+            .exclude_credentials
+            .push(CredentialDescriptor { id: vec![] });
+        let mut empty_rp = valid();
+        empty_rp.rp.id.clear();
+        let mut empty_rp_name = valid();
+        empty_rp_name.rp.name.clear();
+        let mut empty_username = valid();
+        empty_username.user.name.clear();
+        let mut empty_user_id = valid();
+        empty_user_id.user.id.clear();
+        let mut oversized_user_id = valid();
+        oversized_user_id.user.id = vec![0; MAX_USER_HANDLE_LEN + 1];
+        for request in [
+            wrong_rp,
+            excluded,
+            malformed,
+            empty_rp,
+            empty_rp_name,
+            empty_username,
+            empty_user_id,
+            oversized_user_id,
+        ] {
+            assert!(matches!(
+                authenticator.make_credential(&request),
+                Err(crate::Error::AuthenticationRejected)
+            ));
+            assert!(!authenticator.credential.borrow().registered);
+            assert_eq!(authenticator.credential.borrow().sign_count, 0);
+        }
+        let mut algorithm = valid();
+        algorithm.algorithms = vec![-257];
+        let mut uv = valid();
+        uv.user_verification = UserVerification::Required;
+        let mut resident = valid();
+        resident.resident_key_required = true;
+        for request in [algorithm, uv, resident] {
+            assert!(matches!(
+                authenticator.make_credential(&request),
+                Err(crate::Error::UnsupportedFactor)
+            ));
+            assert!(!authenticator.credential.borrow().registered);
+            assert_eq!(authenticator.credential.borrow().sign_count, 0);
+        }
+        let guard = authenticator.credential.borrow();
+        assert!(matches!(
+            authenticator.make_credential(&valid()),
+            Err(crate::Error::Crypto)
+        ));
+        assert!(!guard.registered);
+        assert_eq!(guard.sign_count, 0);
+        drop(guard);
+        assert!(authenticator.make_credential(&valid()).is_ok());
+    }
+
+    #[test]
+    fn registration_rejects_oversized_exclusions_and_allows_retry() {
+        use super::super::{CredentialDescriptor, WebAuthnAdapter};
+
+        let mut too_many = registration_request();
+        too_many.exclude_credentials = (0..=MAX_ALLOW_CREDENTIALS)
+            .map(|_| CredentialDescriptor { id: vec![0] })
+            .collect();
+        let mut oversized_id = registration_request();
+        oversized_id.exclude_credentials.push(CredentialDescriptor {
+            id: vec![0; MAX_CREDENTIAL_ID_LEN + 1],
+        });
+        for request in [too_many, oversized_id] {
+            let authenticator = SoftwareAuthenticator::new("example.com".into()).unwrap();
+            assert!(matches!(
+                authenticator.make_credential(&request),
+                Err(crate::Error::AuthenticationRejected)
+            ));
+            let state = authenticator.credential.borrow();
+            assert!(!state.registered);
+            assert_eq!(state.sign_count, 0);
+            drop(state);
+            let registration = authenticator
+                .make_credential(&registration_request())
+                .expect("invalid exclusions must not consume registration");
+            assert_eq!(registration.credential_id, authenticator.credential_id());
+            assert!(authenticator.credential.borrow().registered);
+            assert_eq!(authenticator.credential.borrow().sign_count, 0);
+        }
+    }
+
+    #[test]
+    fn registration_accepts_exclusion_and_user_handle_boundaries() {
+        use super::super::{CredentialDescriptor, WebAuthnAdapter};
+
+        let mut maximum_list = registration_request();
+        maximum_list.exclude_credentials = (0..MAX_ALLOW_CREDENTIALS)
+            .map(|_| CredentialDescriptor { id: vec![0] })
+            .collect();
+        let mut maximum_id = registration_request();
+        maximum_id.exclude_credentials.push(CredentialDescriptor {
+            id: vec![0; MAX_CREDENTIAL_ID_LEN],
+        });
+        let mut maximum_user_id = registration_request();
+        maximum_user_id.user.id = vec![0; MAX_USER_HANDLE_LEN];
+        for request in [maximum_list, maximum_id, maximum_user_id] {
+            let authenticator = SoftwareAuthenticator::new("example.com".into()).unwrap();
+            let registration = authenticator.make_credential(&request).unwrap();
+            assert_eq!(registration.credential_id, authenticator.credential_id());
+            assert!(authenticator.credential.borrow().registered);
+            assert_eq!(authenticator.credential.borrow().sign_count, 0);
+        }
+    }
+
+    #[test]
+    fn registration_rejects_credentials_already_used_for_assertions() {
+        use super::super::{
+            CredentialDescriptor, UserVerification, WebAuthnAdapter, WebAuthnGetRequest,
+        };
+
+        let authenticator = SoftwareAuthenticator::new("example.com".into()).unwrap();
+        let request = WebAuthnGetRequest {
+            rp_id: "example.com".into(),
+            client_data_hash: [0; 32],
+            allow_credentials: vec![CredentialDescriptor {
+                id: authenticator.credential_id(),
+            }],
+            user_verification: UserVerification::Preferred,
+        };
+        authenticator.get_assertion(&request).unwrap();
+        assert!(matches!(
+            authenticator.make_credential(&registration_request()),
+            Err(crate::Error::AuthenticationRejected)
+        ));
+        assert!(!authenticator.credential.borrow().registered);
+        assert_eq!(authenticator.credential.borrow().sign_count, 1);
+    }
 
     #[test]
     fn realm_fixture_matches_the_seeded_public_credential() {

@@ -66,7 +66,49 @@ pub struct WebAuthnAssertion {
     pub user_handle: Option<Vec<u8>>,
 }
 
+/// Relying-party entity used when creating a credential.
+pub struct WebAuthnRpEntity {
+    pub id: String,
+    pub name: String,
+}
+
+/// User entity passed to the authenticator during credential creation.
+pub struct WebAuthnUserEntity {
+    /// Opaque user handle supplied by the relying party (1–64 bytes).
+    pub id: Vec<u8>,
+    pub name: String,
+    pub display_name: String,
+}
+
+/// Registration options supported by a caller-owned authenticator.
+pub struct WebAuthnCreateRequest {
+    pub rp: WebAuthnRpEntity,
+    pub user: WebAuthnUserEntity,
+    /// SHA-256 of the exact clientDataJSON the caller will submit.
+    /// CTAP and signed-attestation backends bind their response to this hash.
+    /// The virtual `none` attestation backend does not sign it.
+    pub client_data_hash: [u8; 32],
+    /// COSE algorithm identifiers offered by the relying party (ES256 is -7).
+    pub algorithms: Vec<i32>,
+    pub exclude_credentials: Vec<CredentialDescriptor>,
+    pub user_verification: UserVerification,
+    pub resident_key_required: bool,
+}
+
+/// Public registration material. The caller supplies clientDataJSON separately.
+pub struct WebAuthnRegistration {
+    pub credential_id: Vec<u8>,
+    /// CBOR attestation object, including the credential public key.
+    pub attestation_object: Vec<u8>,
+}
+
 /// Caller-owned key-touch. Sync for now; revisit if a backend needs async.
 pub trait WebAuthnAdapter {
+    /// Register a credential if supported by this backend.
+    /// The caller owns clientDataJSON challenge/origin validation and HTTP posting.
+    fn make_credential(&self, _req: &WebAuthnCreateRequest) -> crate::Result<WebAuthnRegistration> {
+        Err(crate::Error::UnsupportedFactor)
+    }
+
     fn get_assertion(&self, req: &WebAuthnGetRequest) -> crate::Result<WebAuthnAssertion>;
 }
