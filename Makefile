@@ -25,8 +25,8 @@ test: ## Run every check: unit tests, lint, then the live Keycloak suite
 	$(MAKE) unit lint
 	tests/keycloak/run.sh; status=$$?; $(COMPOSE) down; exit $$status
 
-demo: ## Log alice in to a real Keycloak with the CLI and show the server's events
-	tests/keycloak/demo.sh
+demo: ## Log a fixture user in with the CLI (METHOD=password|totp|totp-devices|list) and show Keycloak's events
+	METHOD="$(METHOD)" QR="$(QR)" tests/keycloak/demo.sh
 
 test-distros: ## Run make test on every supported distro, one after another
 	@for distro in $(DISTROS); do \

@@ -63,8 +63,11 @@ and later steps then fail with `Protocol("login flow failed")`. Keycloak's usern
 page is handled: it asks `Username` (unless `Start::login_hint` is set) and then `Password`. A wrong
 password ends the login with `AuthStep::Failed` carrying Keycloak's message, such as "Invalid
 username or password."; start a new login to try again, as `login` and `sshd` do for any PAM
-failure. Other pages, such as the one-time-code page, still return `UnsupportedFactor` until their
-handlers land.
+failure. With the `totp` feature, the one-time-code page asks `Challenge::OneTimeCode { devices }`,
+where `devices` is empty unless Keycloak offers a choice; answer `Answer::OneTimeCode { code,
+device }` with one of the offered ids, or `None` when there is no choice. A wrong code ends the
+login with `AuthStep::Failed`. Other pages, such as WebAuthn, still return `UnsupportedFactor` until
+their handlers land.
 
 These types replace the earlier placeholders, which had no callers: `Challenge::Totp` and
 `Answer::Totp` became `OneTimeCode`, the SMS and email variants were removed until those

@@ -377,18 +377,7 @@ async fn live_direct_grant_totp_accepts_and_rejects_fixture_users() {
         ("bob", TOTP_SHA1_SECRET, OtpAlgorithm::Sha1, 6),
         ("carol", TOTP_SHA256_SECRET, OtpAlgorithm::Sha256, 8),
     ] {
-        let unix_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock must be after the Unix epoch")
-            .as_secs();
-        let code =
-            totp(secret, unix_time, 30, algorithm, digits).expect("valid fixture TOTP settings");
-
-        let wrong_code = format!(
-            "{:0width$}",
-            (code.parse::<u32>().expect("numeric OTP code") + 1) % 10_u32.pow(digits),
-            width = digits as usize
-        );
+        let wrong_code = wrong_totp(secret, algorithm, digits);
 
         trace(&format!(
             "reject an invalid {digits}-digit TOTP code for {username}"
@@ -403,6 +392,7 @@ async fn live_direct_grant_totp_accepts_and_rejects_fixture_users() {
         trace(&format!(
             "send {username}'s current TOTP code through the password grant"
         ));
+        let code = unspent_totp(secret, algorithm, digits);
         let tokens = app
             .acquire_token_by_password(username, PASSWORD, Some(code.as_str()))
             .await
@@ -523,4 +513,146 @@ async fn live_cached_session_survives_a_restart_and_a_revoked_one_is_rejected() 
         Some(Error::AuthenticationRejected)
     );
     trace("Keycloak refused the revoked session even though it was still cached");
+}
+
+/// Sign `username` in through the browser-free flow up to the one-time-code page.
+#[cfg(all(feature = "password", feature = "totp"))]
+async fn at_code_page(
+    app: &PublicClientApplication,
+    username: &str,
+) -> (AuthFlow, Vec<crate::flow::OtpDevice>) {
+    let (mut flow, first) = app.initiate_auth_flow(Start::default()).await.unwrap();
+    assert!(matches!(first, AuthStep::Challenge(Challenge::Username)));
+    let next = app
+        .continue_auth_flow(&mut flow, Answer::Username(username.to_owned()))
+        .await
+        .unwrap();
+    assert!(matches!(next, AuthStep::Challenge(Challenge::Password)));
+    let step = app
+        .continue_auth_flow(&mut flow, Answer::Password(PASSWORD.to_owned()))
+        .await
+        .unwrap();
+    let AuthStep::Challenge(Challenge::OneTimeCode { devices }) = step else {
+        panic!("the login must ask for a one-time code after the password");
+    };
+    (flow, devices)
+}
+
+#[cfg(all(feature = "password", feature = "totp"))]
+fn totp_period_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock must be after the Unix epoch")
+        .as_secs()
+        / 30
+}
+
+#[cfg(all(feature = "password", feature = "totp"))]
+fn totp_at(secret: &[u8], period: u64, algorithm: OtpAlgorithm, digits: u32) -> String {
+    totp(secret, period * 30, 30, algorithm, digits)
+        .expect("valid fixture TOTP settings")
+        .to_string()
+}
+
+/// Codes already spent per secret. Keycloak refuses a reused code and these tests run in
+/// parallel, so each login takes an unspent code from the current or next period.
+#[cfg(all(feature = "password", feature = "totp"))]
+static SPENT_TOTP_CODES: std::sync::Mutex<Vec<(&[u8], String)>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(all(feature = "password", feature = "totp"))]
+fn unspent_totp(secret: &'static [u8], algorithm: OtpAlgorithm, digits: u32) -> String {
+    let current = totp_period_now();
+    let mut spent = SPENT_TOTP_CODES.lock().unwrap();
+    let code = (current..=current + 1)
+        .map(|period| totp_at(secret, period, algorithm, digits))
+        .find(|code| {
+            !spent
+                .iter()
+                .any(|(used, spent_code)| *used == secret && spent_code == code)
+        })
+        .expect("at most two TOTP logins per user in one period");
+    spent.push((secret, code.clone()));
+    code
+}
+
+/// A code that matches no period Keycloak would accept right now.
+#[cfg(all(feature = "password", feature = "totp"))]
+fn wrong_totp(secret: &[u8], algorithm: OtpAlgorithm, digits: u32) -> String {
+    let current = totp_period_now();
+    let accepted: Vec<String> = (current - 1..=current + 2)
+        .map(|period| totp_at(secret, period, algorithm, digits))
+        .collect();
+    let modulus = 10_u32.pow(digits);
+    let mut value = accepted[1].parse::<u32>().expect("numeric OTP code");
+    loop {
+        value = (value + 1) % modulus;
+        let candidate = format!("{value:0width$}", width = digits as usize);
+        if !accepted.contains(&candidate) {
+            return candidate;
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+#[cfg(all(feature = "password", feature = "totp"))]
+async fn live_one_time_code_completes_the_login_and_a_wrong_code_fails_it() {
+    let app = PublicClientApplication::with_config(config())
+        .await
+        .unwrap();
+
+    trace("log bob in with his authenticator-app code; one device, so no choice is offered");
+    let (mut flow, devices) = at_code_page(&app, "bob").await;
+    assert!(devices.is_empty());
+    let code = unspent_totp(TOTP_SHA1_SECRET, OtpAlgorithm::Sha1, 6);
+    let step = app
+        .continue_auth_flow(&mut flow, Answer::OneTimeCode { code, device: None })
+        .await
+        .unwrap();
+    let AuthStep::Complete(tokens) = step else {
+        panic!("bob's code must complete the login");
+    };
+    assert_eq!(
+        app.userinfo(&tokens).await.unwrap()["preferred_username"],
+        "bob"
+    );
+
+    trace("carol picks her authenticator app from the two devices Keycloak offers");
+    let (mut flow, devices) = at_code_page(&app, "carol").await;
+    let labels: Vec<&str> = devices.iter().map(|device| device.label.as_str()).collect();
+    assert_eq!(labels, ["Authenticator app", "Hardware token"]);
+    let app_device = devices[0].id.clone();
+    let code = unspent_totp(TOTP_SHA256_SECRET, OtpAlgorithm::Sha256, 8);
+    let step = app
+        .continue_auth_flow(
+            &mut flow,
+            Answer::OneTimeCode {
+                code,
+                device: Some(app_device),
+            },
+        )
+        .await
+        .unwrap();
+    let AuthStep::Complete(tokens) = step else {
+        panic!("carol's code for her chosen device must complete the login");
+    };
+    assert_eq!(
+        app.userinfo(&tokens).await.unwrap()["preferred_username"],
+        "carol"
+    );
+
+    trace("a wrong code ends bob's next login as failed");
+    let (mut flow, _) = at_code_page(&app, "bob").await;
+    let step = app
+        .continue_auth_flow(
+            &mut flow,
+            Answer::OneTimeCode {
+                code: wrong_totp(TOTP_SHA1_SECRET, OtpAlgorithm::Sha1, 6),
+                device: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(step, AuthStep::Failed { .. }));
+    trace("Keycloak refused the wrong code and the login ended");
 }

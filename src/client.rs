@@ -1173,7 +1173,7 @@ mod tests {
                 PageKind::UsernamePassword { .. } if login_hint.is_some() => {
                     vec![Challenge::Password]
                 }
-                PageKind::OneTimeCode { devices } => vec![Challenge::OneTimeCode {
+                PageKind::OneTimeCode { devices, .. } => vec![Challenge::OneTimeCode {
                     devices: devices
                         .iter()
                         .map(|device| OtpDevice::new(device.id.clone(), device.label.clone()))
@@ -1868,11 +1868,18 @@ mod tests {
         let (mut flow, first) = client.initiate_auth_flow(Start::default()).await.unwrap();
         assert!(matches!(challenge(Ok(first)), Challenge::Username));
         assert!(flow.is_active());
-        // No built-in handler takes the one-time-code page yet.
-        assert_eq!(
-            client.initiate_auth_flow(Start::default()).await.err(),
-            Some(Error::UnsupportedFactor)
-        );
+        // The built-in one-time-code handler takes the code page when the build has `totp`.
+        let code = client.initiate_auth_flow(Start::default()).await;
+        if cfg!(feature = "totp") {
+            let (mut flow, first) = code.unwrap();
+            assert!(matches!(
+                challenge(Ok(first)),
+                Challenge::OneTimeCode { .. }
+            ));
+            assert!(flow.is_active());
+        } else {
+            assert_eq!(code.err(), Some(Error::UnsupportedFactor));
+        }
         assert_eq!(sent(&endpoint).len(), 3);
     }
 

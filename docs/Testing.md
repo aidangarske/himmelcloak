@@ -11,7 +11,10 @@ credential and a SHA-1 HOTP credential. `dave` has a SHA-1 HOTP-only credential
 so the live suite can exercise direct-grant HOTP login. Their fixed Base32 test
 secrets exist only for local and CI testing. The live suite verifies accepted
 and rejected TOTP codes for Bob and Carol, plus accepted and rejected HOTP codes
-for Dave. After changing `tests/keycloak/realm-export.json`, run
+for Dave, all through the direct grant. Through the native one-time-code page,
+it signs in Bob, has Carol choose her authenticator app from her two devices,
+and checks that a wrong code fails the login. The CLI live test drives the
+hidden code prompt and the device menu through a terminal. After changing `tests/keycloak/realm-export.json`, run
 `make test-live` to rebuild the temporary Keycloak realm.
 
 Run `make test-live` for the moving `latest` Keycloak image or set `KEYCLOAK_IMAGE` to another tag.
@@ -72,6 +75,11 @@ The native cache stamp includes this build mode. Existing native prefixes need a
 fresh `NATIVE_PREFIX` or a rebuild when their stamp does not match.
 Each new login factor must add a live scenario before its feature is treated as
 complete.
+
+The page fixtures come from `tests/keycloak/capture-pages.sh` against the Keycloak
+release in `tests/fixtures/keycloak/KEYCLOAK_VERSION`, in the `base` and
+`keycloak.v2` themes. `nightly/login-otp-devices.html` is Keycloak nightly's
+device page, whose device radios are named through `aria-labelledby`.
 
 The challenge/answer contract is unit-tested without a server in `src/client.rs`
 and `src/flow/driver.rs`. Stub factor handlers drive recorded Keycloak pages

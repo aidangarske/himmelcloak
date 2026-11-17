@@ -138,9 +138,15 @@ fn read_available(master: &mut File, output: &mut Vec<u8>) {
     assert!(output.len() < 65_536, "unexpectedly large CLI output");
 }
 
-/// Run `test-login` in a pseudo-terminal, answer its two prompts, and return how it exited and
-/// everything it printed.
+/// Run `test-login` in a pseudo-terminal, answer its username and password prompts, and return
+/// how it exited and everything it printed.
 fn test_login(dir: &WorkDir, username: &str, password: &str) -> (ExitStatus, String) {
+    test_login_answering(dir, &[("Username: ", username), ("Password: ", password)])
+}
+
+/// Run `test-login` in a pseudo-terminal, answer each prompt in order, and return how it exited
+/// and everything it printed.
+fn test_login_answering(dir: &WorkDir, answers: &[(&str, &str)]) -> (ExitStatus, String) {
     let (mut master, slave) = terminal_pair();
     let child = Command::new(env!("CARGO_BIN_EXE_himmelcloak-cli"))
         .arg("test-login")
@@ -154,10 +160,8 @@ fn test_login(dir: &WorkDir, username: &str, password: &str) -> (ExitStatus, Str
     let mut output = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(30);
 
-    for (prompt, answer) in [
-        (&b"Username: "[..], username),
-        (&b"Password: "[..], password),
-    ] {
+    for (prompt, answer) in answers {
+        let prompt = prompt.as_bytes();
         while !output.windows(prompt.len()).any(|part| part == prompt) {
             assert!(Instant::now() < deadline, "timed out waiting for a prompt");
             assert!(
@@ -215,4 +219,50 @@ fn cli_test_login_completes_a_password_login_end_to_end() {
     assert!(output.contains("himmelcloak-cli: login failed"), "{output}");
     assert_no_secrets(&output, WRONG_PASSWORD);
     trace("the CLI printed login failed and exited 1, without the password");
+}
+
+#[test]
+#[ignore = "requires a live Keycloak server and test CA"]
+fn cli_test_login_prompts_for_a_hidden_code_and_lists_code_devices() {
+    let dir = work_dir("otp");
+    // Seven digits never match a six- or eight-digit fixture code, so no code is spent.
+    let wrong_code = "0000 000";
+
+    trace("bob's password leads to the hidden one-time-code prompt; a wrong code fails the login");
+    let (status, output) = test_login_answering(
+        &dir,
+        &[
+            ("Username: ", "bob"),
+            ("Password: ", PASSWORD),
+            ("One-time code: ", wrong_code),
+        ],
+    );
+    assert_eq!(status.code(), Some(1), "a wrong code must fail: {output}");
+    assert!(output.contains("himmelcloak-cli: login failed"), "{output}");
+    assert!(!output.contains("Device ["), "bob has one device: {output}");
+    assert!(
+        !output.contains(wrong_code) && !output.contains(&wrong_code.replace(' ', "")),
+        "the code was echoed: {output}"
+    );
+    assert_no_secrets(&output, PASSWORD);
+
+    trace("carol is offered both code devices by number before the code prompt");
+    let (status, output) = test_login_answering(
+        &dir,
+        &[
+            ("Username: ", "carol"),
+            ("Password: ", PASSWORD),
+            ("Device [1-2]: ", "1"),
+            ("One-time code: ", wrong_code),
+        ],
+    );
+    assert_eq!(status.code(), Some(1), "a wrong code must fail: {output}");
+    assert!(output.contains("1) Authenticator app"), "{output}");
+    assert!(output.contains("2) Hardware token"), "{output}");
+    assert!(
+        !output.contains(wrong_code) && !output.contains(&wrong_code.replace(' ', "")),
+        "the code was echoed: {output}"
+    );
+    assert_no_secrets(&output, PASSWORD);
+    trace("the CLI listed carol's devices, hid the code, and reported the failed login");
 }

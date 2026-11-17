@@ -20,7 +20,7 @@
  */
 
 use himmelcloak::config::Config;
-use himmelcloak::{Answer, AuthStep, Challenge, PublicClientApplication, Start};
+use himmelcloak::{Answer, AuthStep, Challenge, OtpDevice, PublicClientApplication, Start};
 use serde::Deserialize;
 use std::io::{self, Write};
 use std::{fs, path::Path, path::PathBuf};
@@ -161,6 +161,49 @@ fn read_input(prompt: &str, hidden: bool) -> LoginResult<Zeroizing<String>> {
 
     Ok(value)
 }
+/// The device to post with the code: none when Keycloak offers no choice, the only one when it
+/// offers one, otherwise the one the user picks from a numbered list.
+fn choose_device(devices: &[OtpDevice]) -> LoginResult<Option<String>> {
+    match devices {
+        [] => Ok(None),
+        [only] => Ok(Some(only.id.clone())),
+        _ => {
+            print!("{}", device_menu(devices));
+            let choice = read_input(&format!("Device [1-{}]: ", devices.len()), false)?;
+            let index = parse_device_choice(&choice, devices.len())?;
+            Ok(Some(devices[index].id.clone()))
+        }
+    }
+}
+
+/// Device labels come from the server, so control characters are dropped before printing.
+fn device_menu(devices: &[OtpDevice]) -> String {
+    devices
+        .iter()
+        .enumerate()
+        .map(|(i, device)| {
+            let label: String = device.label.chars().filter(|c| !c.is_control()).collect();
+            format!("  {}) {label}\n", i + 1)
+        })
+        .collect()
+}
+
+/// Authenticator apps show codes in groups, such as `546 708`, and users type them that way.
+fn strip_code_spaces(code: &mut String) -> LoginResult<()> {
+    code.retain(|c| !c.is_whitespace());
+    if code.is_empty() {
+        return Err("input must not be empty");
+    }
+    Ok(())
+}
+
+fn parse_device_choice(input: &str, count: usize) -> LoginResult<usize> {
+    match input.trim().parse::<usize>() {
+        Ok(choice) if (1..=count).contains(&choice) => Ok(choice - 1),
+        _ => Err("invalid device choice"),
+    }
+}
+
 /// The fixed message for a login that could not start. It never includes server details.
 fn start_error(error: &himmelcloak::Error) -> &'static str {
     match error {
@@ -186,6 +229,7 @@ async fn login(config: Config) -> LoginResult<()> {
         .await
         .map_err(|error| start_error(&error))?;
     let mut password_submitted = false;
+    let mut code_submitted = false;
 
     loop {
         let answer = match step {
@@ -194,6 +238,10 @@ async fn login(config: Config) -> LoginResult<()> {
             AuthStep::Challenge(Challenge::Username | Challenge::Password)
                 if password_submitted =>
             {
+                flow.cancel();
+                return Err("login failed");
+            }
+            AuthStep::Challenge(Challenge::OneTimeCode { .. }) if code_submitted => {
                 flow.cancel();
                 return Err("login failed");
             }
@@ -206,9 +254,19 @@ async fn login(config: Config) -> LoginResult<()> {
                 password_submitted = true;
                 Answer::Password(std::mem::take(&mut *password))
             }
+            AuthStep::Challenge(Challenge::OneTimeCode { devices }) => {
+                let device = choose_device(&devices)?;
+                let mut code = read_input("One-time code: ", true)?;
+                strip_code_spaces(&mut code)?;
+                code_submitted = true;
+                Answer::OneTimeCode {
+                    code: std::mem::take(&mut *code),
+                    device,
+                }
+            }
             _ => {
                 flow.cancel();
-                return Err("this command currently supports password login only");
+                return Err("this command supports password and one-time-code login only");
             }
         };
 
@@ -231,8 +289,62 @@ pub fn run(path: &Path) -> LoginResult<()> {
 }
 #[cfg(test)]
 mod tests {
-    use super::{parse_login_config, start_error};
+    use super::{
+        choose_device, device_menu, parse_device_choice, parse_login_config, start_error,
+        strip_code_spaces,
+    };
+    use himmelcloak::OtpDevice;
     use std::path::PathBuf;
+
+    #[test]
+    fn device_menu_numbers_devices_and_drops_control_characters() {
+        let devices = [
+            OtpDevice::new("id-1".into(), "Authenticator app".into()),
+            OtpDevice::new("id-2".into(), "Token\u{1b}[2J\r\nfake".into()),
+        ];
+        assert_eq!(
+            device_menu(&devices),
+            "  1) Authenticator app\n  2) Token[2Jfake\n"
+        );
+    }
+
+    #[test]
+    fn no_device_or_a_single_device_is_chosen_without_asking() {
+        assert_eq!(choose_device(&[]), Ok(None));
+        let only = [OtpDevice::new("id-1".into(), "Authenticator app".into())];
+        assert_eq!(choose_device(&only), Ok(Some("id-1".to_owned())));
+    }
+
+    #[test]
+    fn a_code_typed_in_groups_is_sent_without_spaces() {
+        for (typed, sent) in [
+            ("546 708", "546708"),
+            (" 546708 ", "546708"),
+            ("5467 0812", "54670812"),
+            ("546\t708", "546708"),
+        ] {
+            let mut code = typed.to_owned();
+            strip_code_spaces(&mut code).unwrap();
+            assert_eq!(code, sent, "{typed:?}");
+        }
+        for blank in [" ", " \t "] {
+            let mut code = blank.to_owned();
+            assert_eq!(strip_code_spaces(&mut code), Err("input must not be empty"));
+        }
+    }
+
+    #[test]
+    fn device_choice_accepts_only_a_listed_number() {
+        assert_eq!(parse_device_choice("1", 2), Ok(0));
+        assert_eq!(parse_device_choice(" 2 ", 2), Ok(1));
+        for bad in ["0", "3", "-1", "one", "", "1.5"] {
+            assert_eq!(
+                parse_device_choice(bad, 2),
+                Err("invalid device choice"),
+                "{bad:?}"
+            );
+        }
+    }
 
     #[test]
     fn start_errors_have_fixed_messages() {

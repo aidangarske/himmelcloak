@@ -66,7 +66,7 @@ pub(crate) fn extract(page: &Page) -> Result<(PageKind, Form)> {
     let scan = Scan::run(html);
     // `kind()` returns `None` for every page it does not recognise, never `Some(Unknown)`.
     let kind = scan.kind().ok_or(Error::Protocol("unknown login page"))?;
-    let (posted, mut devices) = if let PageKind::OneTimeCode { devices } = &kind {
+    let (posted, mut devices) = if let PageKind::OneTimeCode { devices, .. } = &kind {
         let ids = devices.iter().map(|device| device.id.clone()).collect();
         (OTP_POSTED, ids)
     } else {
