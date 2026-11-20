@@ -25,7 +25,7 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::flow::classify::PageKind;
-use crate::flow::{Answer, Challenge};
+use crate::flow::{Answer, Challenge, OtpDevice};
 
 /// One factor's handling of the pages it owns.
 pub(crate) trait PageFactor: Send + Sync {
@@ -52,9 +52,9 @@ pub(crate) struct Builtin;
 
 impl Factors for Builtin {
     fn for_page(&self, kind: &PageKind) -> Option<&dyn PageFactor> {
-        // The one-time-code handler registers here when its slice lands.
         match kind {
             PageKind::UsernamePassword { .. } => Some(&PasswordFactor),
+            PageKind::OneTimeCode { .. } if cfg!(feature = "totp") => Some(&OtpFactor),
             _ => None,
         }
     }
@@ -97,25 +97,131 @@ impl PageFactor for PasswordFactor {
     }
 }
 
+/// Keycloak's one-time-code page, `login-otp.ftl` (charter §2.3 item 3b). It asks one code,
+/// naming the user's devices when Keycloak offers a choice, and posts the code with the chosen
+/// device. Keycloak checks the code; the client never sees the device's secret.
+pub(crate) struct OtpFactor;
+
+impl PageFactor for OtpFactor {
+    fn challenges(&self, kind: &PageKind, _login_hint: Option<&str>) -> Result<Vec<Challenge>> {
+        match kind {
+            PageKind::OneTimeCode { devices, .. } => Ok(vec![Challenge::OneTimeCode {
+                devices: devices
+                    .iter()
+                    .map(|device| OtpDevice::new(device.id.clone(), device.label.clone()))
+                    .collect(),
+            }]),
+            _ => Err(Error::UnsupportedFactor),
+        }
+    }
+
+    fn fields(
+        &self,
+        _kind: &PageKind,
+        answers: &[Answer],
+    ) -> Result<Vec<(String, Zeroizing<String>)>> {
+        let mut fields = Vec::new();
+        for answer in answers {
+            let Answer::OneTimeCode { code, device } = answer else {
+                return Err(Error::Protocol(
+                    "answer does not belong to the one-time-code page",
+                ));
+            };
+            fields.push(("otp".to_owned(), Zeroizing::new(code.clone())));
+            if let Some(device) = device {
+                fields.push((
+                    "selectedCredentialId".to_owned(),
+                    Zeroizing::new(device.clone()),
+                ));
+            }
+        }
+        Ok(fields)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Builtin, Factors, PageFactor, PasswordFactor};
+    use super::{Builtin, Factors, OtpFactor, PageFactor, PasswordFactor};
     use crate::error::Error;
     use crate::flow::classify::PageKind;
-    use crate::flow::{Answer, Challenge};
+    use crate::flow::{Answer, Challenge, OtpDevice};
 
     fn login_page() -> PageKind {
         PageKind::UsernamePassword { error: None }
     }
 
+    fn code_page(devices: &[(&str, &str)]) -> PageKind {
+        PageKind::OneTimeCode {
+            devices: devices
+                .iter()
+                .map(|(id, label)| OtpDevice::new((*id).to_owned(), (*label).to_owned()))
+                .collect(),
+            error: None,
+        }
+    }
+
+    fn posted(fields: &[(String, zeroize::Zeroizing<String>)]) -> Vec<(&str, &str)> {
+        fields
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect()
+    }
+
     #[test]
-    fn builtin_handles_the_login_page_and_nothing_else_yet() {
+    fn builtin_handles_the_login_and_code_pages_only() {
         assert!(Builtin.for_page(&login_page()).is_some());
-        let code_page = PageKind::OneTimeCode {
-            devices: Vec::new(),
-        };
-        assert!(Builtin.for_page(&code_page).is_none());
+        assert_eq!(
+            Builtin.for_page(&code_page(&[])).is_some(),
+            cfg!(feature = "totp")
+        );
         assert!(Builtin.for_page(&PageKind::Unknown).is_none());
+    }
+
+    #[test]
+    fn the_code_page_asks_one_code_and_lists_the_offered_devices() {
+        let devices = [("id-1", "Authenticator app"), ("id-2", "Hardware token")];
+        let asked = OtpFactor.challenges(&code_page(&devices), None).unwrap();
+        let [Challenge::OneTimeCode { devices: offered }] = asked.as_slice() else {
+            panic!("the code page must ask exactly one one-time code");
+        };
+        let offered: Vec<(&str, &str)> = offered
+            .iter()
+            .map(|device| (device.id.as_str(), device.label.as_str()))
+            .collect();
+        assert_eq!(offered, devices);
+        assert_eq!(
+            OtpFactor.challenges(&login_page(), None).err(),
+            Some(Error::UnsupportedFactor)
+        );
+    }
+
+    #[test]
+    fn a_code_becomes_the_otp_field_with_the_chosen_device() {
+        let page = code_page(&[("id-1", "Phone"), ("id-2", "Token")]);
+        let answer = Answer::OneTimeCode {
+            code: "123456".to_owned(),
+            device: Some("id-2".to_owned()),
+        };
+        let fields = OtpFactor.fields(&page, &[answer]).unwrap();
+        assert_eq!(
+            posted(&fields),
+            [("otp", "123456"), ("selectedCredentialId", "id-2")]
+        );
+        // With one device the page offers no choice, so only the code is posted.
+        let answer = Answer::OneTimeCode {
+            code: "654321".to_owned(),
+            device: None,
+        };
+        let fields = OtpFactor.fields(&code_page(&[]), &[answer]).unwrap();
+        assert_eq!(posted(&fields), [("otp", "654321")]);
+        assert_eq!(
+            OtpFactor
+                .fields(&page, &[Answer::Password("p".to_owned())])
+                .err(),
+            Some(Error::Protocol(
+                "answer does not belong to the one-time-code page"
+            ))
+        );
     }
 
     #[test]

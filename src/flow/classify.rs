@@ -54,8 +54,12 @@ pub(crate) enum PageKind {
     /// `login.ftl`: username and password posted together. `error` is Keycloak's message when it
     /// sends the page back after a failed attempt, such as a wrong password.
     UsernamePassword { error: Option<String> },
-    /// `login-otp.ftl`. `devices` is empty unless Keycloak offers a choice of devices.
-    OneTimeCode { devices: Vec<OtpDevice> },
+    /// `login-otp.ftl`. `devices` is empty unless Keycloak offers a choice of devices. `error`
+    /// is Keycloak's message when it sends the page back after a wrong code.
+    OneTimeCode {
+        devices: Vec<OtpDevice>,
+        error: Option<String>,
+    },
     /// Any other page, or a known page with unexpected fields. The flow denies it.
     Unknown,
 }
@@ -64,8 +68,8 @@ impl PageKind {
     /// Keycloak's message when it sent this page back because it refused the last answers.
     pub(crate) fn rejection(&self) -> Option<&str> {
         match self {
-            Self::UsernamePassword { error } => error.as_deref(),
-            _ => None,
+            Self::UsernamePassword { error } | Self::OneTimeCode { error, .. } => error.as_deref(),
+            Self::Unknown => None,
         }
     }
 }
@@ -94,13 +98,16 @@ pub(super) struct Control {
 struct Tile {
     index: usize,
     credential: Option<String>,
-    /// The `base` radio input; its label is a separate `<label for=...>`.
+    /// A radio input, named by a separate `<label for=...>` or by its `aria-labelledby`.
     is_input: bool,
+    /// The element whose text names the radio, as newer Keycloak themes mark it up.
+    labelled_by: Option<String>,
     text: String,
 }
 
 enum Target {
     Label(String),
+    Title(String),
     Tile(usize),
     FieldError,
 }
@@ -135,6 +142,8 @@ pub(super) struct Scan {
     pub(super) method: Option<String>,
     pub(super) controls: Vec<Control>,
     labels: Vec<(String, String)>,
+    /// Text of elements a device radio names through `aria-labelledby`, keyed by their ID.
+    titles: Vec<(String, String)>,
     tiles: Vec<Tile>,
     /// Keycloak's non-empty field-error messages, in page order.
     errors: Vec<String>,
@@ -212,6 +221,14 @@ impl Scan {
         if attribute(tag, "id").is_some_and(|id| is_field_error(&id)) {
             self.begin(Target::FieldError, name, tag.self_closing);
         }
+        // Only titles after their radio are captured; a title first leaves the page Unknown.
+        if let Some(id) = attribute(tag, "id").filter(|id| {
+            self.tiles
+                .iter()
+                .any(|tile| tile.labelled_by.as_deref() == Some(id.as_str()))
+        }) {
+            self.begin(Target::Title(id), name, tag.self_closing);
+        }
         if let Some(index) = attribute(tag, "id")
             .and_then(|id| id.strip_prefix(DEVICE_ID_PREFIX)?.parse::<usize>().ok())
         {
@@ -221,10 +238,12 @@ impl Scan {
             } else {
                 attribute(tag, "onclick").and_then(|onclick| toggle_credential(&onclick, index))
             };
+            let labelled_by = attribute(tag, "aria-labelledby").filter(|_| is_input);
             self.tiles.push(Tile {
                 index,
                 credential,
                 is_input,
+                labelled_by,
                 text: String::new(),
             });
             if !is_input {
@@ -290,6 +309,7 @@ impl Scan {
                 }
                 match capture.target {
                     Target::Label(target) => self.labels.push((target, capture.text)),
+                    Target::Title(id) => self.titles.push((id, capture.text)),
                     Target::Tile(index) => self.tiles[index].text = capture.text,
                     Target::FieldError => {
                         // The message is shown in a terminal, so it is cleaned like a label.
@@ -317,9 +337,10 @@ impl Scan {
             });
         }
         if self.has("otp") && !self.has("password") && self.only(OTP_FIELDS) && self.unique() {
-            return self
-                .devices()
-                .map(|devices| PageKind::OneTimeCode { devices });
+            return self.devices().map(|devices| PageKind::OneTimeCode {
+                devices,
+                error: self.errors.first().cloned(),
+            });
         }
         None
     }
@@ -357,7 +378,9 @@ impl Scan {
             .iter()
             .map(|tile| {
                 let id = tile.credential.clone().filter(|id| !id.is_empty())?;
-                let text = if tile.is_input {
+                let text = if let Some(title) = &tile.labelled_by {
+                    &self.titles.iter().find(|(id, _)| id == title)?.1
+                } else if tile.is_input {
                     let element = format!("{DEVICE_ID_PREFIX}{}", tile.index);
                     &self.labels.iter().find(|(target, _)| *target == element)?.1
                 } else {
@@ -470,6 +493,13 @@ mod tests {
     const V2_OTP: &str = include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-otp.html");
     const V2_DEVICES: &str =
         include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-otp-devices.html");
+    /// Keycloak nightly's device page: radios named through `aria-labelledby`, empty labels.
+    const NIGHTLY_DEVICES: &str =
+        include_str!("../../tests/fixtures/keycloak/nightly/login-otp-devices.html");
+    const BASE_WRONG_CODE: &str =
+        include_str!("../../tests/fixtures/keycloak/base/login-otp-wrong-code.html");
+    const V2_WRONG_CODE: &str =
+        include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-otp-wrong-code.html");
 
     /// carol's two devices from the charter's fixture realm (Table 23).
     const TOTP_DEVICE: &str = "00000000-0000-4000-8000-000000000001";
@@ -483,7 +513,7 @@ mod tests {
     /// The device list, or `None` when the page is not a one-time-code page.
     fn devices(html: &str) -> Option<Vec<(String, String)>> {
         match kind(html) {
-            PageKind::OneTimeCode { devices } => Some(
+            PageKind::OneTimeCode { devices, .. } => Some(
                 devices
                     .into_iter()
                     .map(|device| (device.id, device.label))
@@ -526,9 +556,19 @@ mod tests {
             assert_eq!(login_error(page), Some(Some(message.to_owned())));
             assert_eq!(kind(page).rejection(), Some(message));
         }
-        // Only the login page reports a rejection.
         assert_eq!(login_error(BASE_OTP), None);
         assert_eq!(kind(BASE_OTP).rejection(), None);
+    }
+
+    #[test]
+    fn a_wrong_code_page_carries_keycloaks_message_in_both_themes() {
+        for page in [BASE_WRONG_CODE, V2_WRONG_CODE] {
+            assert!(matches!(kind(page), PageKind::OneTimeCode { .. }));
+            assert_eq!(kind(page).rejection(), Some("Invalid authenticator code."));
+        }
+        for page in [BASE_OTP, V2_OTP, BASE_DEVICES, V2_DEVICES] {
+            assert_eq!(kind(page).rejection(), None);
+        }
     }
 
     #[test]
@@ -580,7 +620,17 @@ mod tests {
             (HOTP_DEVICE.to_owned(), "Hardware token".to_owned()),
         ];
         assert_eq!(devices(BASE_DEVICES), Some(expected.clone()));
-        assert_eq!(devices(V2_DEVICES), Some(expected));
+        assert_eq!(devices(V2_DEVICES), Some(expected.clone()));
+        assert_eq!(devices(NIGHTLY_DEVICES), Some(expected));
+    }
+
+    #[test]
+    fn a_radio_whose_labelledby_target_is_missing_makes_the_page_unknown() {
+        let page = NIGHTLY_DEVICES.replace(
+            r#"id="kc-otp-credential-title-1""#,
+            r#"id="kc-otp-credential-other""#,
+        );
+        assert!(is_unknown(&page));
     }
 
     #[test]

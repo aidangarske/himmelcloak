@@ -34,7 +34,7 @@ cargo run --locked -p himmelcloak-cli -- clear-state
 ```
 
 `config check` validates TOML syntax only. `clear-state` remains a placeholder.
-`test-login` runs an interactive native password login. `sync-users` reads the
+`test-login` runs an interactive native password and one-time-code login. `sync-users` reads the
 configured group as described below.
 
 ### Test login
@@ -80,8 +80,10 @@ Success prints `himmelcloak-cli: login succeeded` and exits with status 0.
 Errors exit nonzero with a fixed message. Tokens and server-provided error
 details are not printed, and resulting tokens are not persisted.
 
-The command currently handles username and password challenges. OTP,
-WebAuthn, and required-action challenges are not supported by this command.
+The command handles username, password, and one-time-code (TOTP and HOTP)
+challenges. The code is not echoed, and spaces typed inside it are dropped.
+When Keycloak offers several code devices, the command lists them by number.
+WebAuthn and required-action challenges are not supported by this command.
 
 The interrupt handler attempts to restore terminal settings before exiting
 with status 130 on Ctrl+C, SIGTERM, or SIGHUP.
@@ -213,6 +215,11 @@ client, which has the password grant disabled, so the CLI walks Keycloak's login
 pages. Enter `alice` and `correct-horse-battery-staple`; run it again with a
 wrong password to see the rejection.
 
+`METHOD=` picks the login. `password` (the default) signs in `alice`; `totp` signs
+in `bob` with a code from a phone authenticator app; `totp-devices` has `carol`
+choose between two code devices first; `list` prints the methods. See
+[Phone one-time-code demo](#phone-one-time-code-demo) for the phone setup.
+
 `KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:nightly make test` selects the nightly
 server. Keycloak gets a random free host port, so an existing service on 8443
 does not block the tests; set `KEYCLOAK_HOST_PORT=8443` to pin it. CI resolves
@@ -220,6 +227,54 @@ the latest stable Keycloak release and the nightly image to exact image digests
 at run time. Stable login is required for merging; nightly failures remain
 visible in an optional check without cancelling stable.
 See [CI gates and runtime baseline](CI.md) for triggers and branch-rule settings.
+
+### Phone one-time-code demo
+
+`make demo METHOD=totp` signs `bob` in with his password and a code from your
+phone, the same way a site that uses Google Authenticator works. No browser
+opens and no code is sent to the phone: the phone and Keycloak share a secret
+once, through the QR code, and each computes the same 6-digit code from that
+secret and the current time.
+
+1. Run `make demo METHOD=totp`. It prints a QR code before the login prompts.
+   Make the terminal at least 50 columns wide so the code is not cut off.
+2. Add the account to your phone once:
+   - **iPhone (Apple Passwords):** point the Camera at the QR code and tap the
+     link it shows. Passwords opens and offers to add a verification code.
+     Create a new entry, name it something like `Himmelcloak bob`, and save it.
+     The website field is only a label; `keycloak.test` works.
+   - **Google Authenticator, Aegis, 2FAS, or FreeOTP:** open the app, tap
+     **+**, choose **Scan a QR code**, and scan it from inside the app.
+3. At the prompts, enter `bob` and `correct-horse-battery-staple`.
+4. At `One-time code:`, open the entry on your phone (in Apple Passwords, the
+   **Verification Code** field) and type the 6 digits it shows. The input is
+   hidden like a password, and a space typed in the middle, as in `546 708`, is
+   ignored. The code changes every 30 seconds; if it is about to change, wait for
+   the next one.
+5. The demo prints `himmelcloak-cli: login succeeded`, then Keycloak's `LOGIN`
+   event for `bob`.
+
+From then on, run `make demo METHOD=totp QR=0` to skip the QR code and use the
+same phone entry each time. `make clean` removes Keycloak, but the next run loads
+`bob` with the same fixed secret, so the phone entry keeps working. Scan again
+only if `tests/keycloak/realm-export.json` changes his secret.
+
+Type a wrong code to see the rejection: the demo prints
+`himmelcloak-cli: login failed` and exits with status 1. Keycloak also refuses a
+code that was already used, so a second login inside the same 30 seconds needs
+the next code.
+
+`make demo METHOD=totp-devices` does the same for `carol`, who has two code
+devices. Pick `1` (Authenticator app) from the menu, then enter her code. Her
+code is SHA-256 with 8 digits. Aegis, 2FAS, and FreeOTP handle it; other apps,
+including Google Authenticator, may ignore SHA-256 and show codes Keycloak rejects.
+
+If the image has no `qrencode`, as some `DISTRO` images do not, the demo prints
+the `otpauth://` link instead; enter it in the app by hand. Codes also fail when
+the host clock is more than about 30 seconds off; check with `timedatectl`.
+
+These secrets are public test fixtures. Real users enroll through Keycloak's own
+"Configure OTP" page, which creates a private secret and shows the QR code.
 
 ### Other Linux distributions
 

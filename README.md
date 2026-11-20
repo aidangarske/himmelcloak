@@ -55,11 +55,22 @@ The first run takes several minutes because it compiles wolfSSL and curl into
 the build image. Later runs reuse that image and rebuild only changed Rust code.
 
 `make demo` prints the distribution and the curl build (`libcurl ... wolfSSL/...`),
-then prompts for a login. Enter `alice` and `correct-horse-battery-staple`; a
-wrong password shows the rejection. The demo covers the browser-free password
-login. `make test` also covers TOTP and HOTP, WebAuthn with a virtual passkey,
-refresh and revocation, replayed and expired codes, certificate rejection, and
-group sync, all against the same Keycloak.
+then prompts for a login. Pick the login method with `METHOD=`:
+
+```sh
+make demo                       # alice, password only (the default)
+make demo METHOD=totp           # bob, password plus a code from your phone
+make demo METHOD=totp-devices   # carol picks one of two code devices, then enters its code
+make demo METHOD=list           # list the methods
+```
+
+Every fixture user's password is `correct-horse-battery-staple`. The TOTP methods
+print a QR code to scan once with your phone; see
+[Phone one-time-code demo](docs/Getting-Started.md#phone-one-time-code-demo) for
+the iPhone and authenticator-app steps. A wrong password or code shows the
+rejection. `make test` also covers HOTP, WebAuthn
+with a virtual passkey, refresh and revocation, replayed and expired codes,
+certificate rejection, and group sync, all against the same Keycloak.
 
 See [Getting Started](docs/Getting-Started.md) and [Testing](docs/Testing.md)
 for prerequisites, configuration, make options, and CI behavior.

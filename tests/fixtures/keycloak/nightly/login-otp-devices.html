@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html class="login-pf" lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="color-scheme" content="light dark">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Sign in to himmelcloak-test</title>
+        <link rel="icon" href="/resources/FIXTURE/login/keycloak.v3/img/favicon.ico" />
+        <link href="/resources/FIXTURE/common/keycloak/vendor/patternfly-v6/patternfly.min.css" rel="stylesheet" />
+        <link href="/resources/FIXTURE/common/keycloak/vendor/patternfly-v6/patternfly-addons.css" rel="stylesheet" />
+        <link href="/resources/FIXTURE/login/keycloak.v3/css/styles.css" rel="stylesheet" />
+    <script type="importmap">
+        {
+            "imports": {
+                "rfc4648": "/resources/FIXTURE/common/keycloak/vendor/rfc4648/rfc4648.js"
+            }
+        }
+    </script>
+      <script type="module" async blocking="render">
+          const DARK_MODE_CLASS = "pf-v6-theme-dark";
+          const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+          updateDarkMode(mediaQuery.matches);
+          mediaQuery.addEventListener("change", (event) => updateDarkMode(event.matches));
+
+          function updateDarkMode(isEnabled) {
+            const { classList } = document.documentElement;
+
+            if (isEnabled) {
+              classList.add(DARK_MODE_CLASS);
+            } else {
+              classList.remove(DARK_MODE_CLASS);
+            }
+          }
+      </script>
+    <script type="module" src="/resources/FIXTURE/login/keycloak.v3/js/passwordVisibility.js"></script>
+    <script type="module">
+        import { startSessionPolling } from "/resources/FIXTURE/login/keycloak.v3/js/authChecker.js";
+
+        startSessionPolling(
+            "/realms/himmelcloak-test/login-actions/restart?client_id=himmelcloak-test-client&tab_id=FIXTURE&client_data=FIXTURE&skip_logout=true"
+        );
+    </script>
+    <script type="module">
+        document.addEventListener("click", (event) => {
+            const link = event.target.closest("a[data-once-link]");
+
+            if (!link) {
+                return;
+            }
+
+            if (link.getAttribute("aria-disabled") === "true") {
+                event.preventDefault();
+                return;
+            }
+
+            const { disabledClass } = link.dataset;
+
+            if (disabledClass) {
+                link.classList.add(...disabledClass.trim().split(/\s+/));
+            }
+
+            link.setAttribute("role", "link");
+            link.setAttribute("aria-disabled", "true");
+        });
+    </script>
+        <script type="module">
+            import { checkAuthSession } from "/resources/FIXTURE/login/keycloak.v3/js/authChecker.js";
+
+            checkAuthSession(
+                "FIXTURE"
+            );
+        </script>
+    <script>
+      // Workaround for https://bugzilla.mozilla.org/show_bug.cgi?id=1404468
+      const isFirefox = true;
+    </script>
+<SCRIPT> if (typeof history.replaceState === 'function') {  history.replaceState({}, "some title", "https://keycloak.test:8443/realms/himmelcloak-test/login-actions/authenticate?execution=FIXTURE&client_id=himmelcloak-test-client&tab_id=FIXTURE&client_data=FIXTURE"); }</SCRIPT></head>
+
+<body id="keycloak-bg" class="" data-page-id="login-login-otp">
+<div class="pf-v6-c-login">
+  <div class="pf-v6-c-login__container">
+    <header id="kc-header" class="pf-v6-c-login__header">
+      <div id="kc-header-wrapper"
+              class="pf-v6-c-brand">himmelcloak-test</div>
+    </header>
+    <main class="pf-v6-c-login__main">
+      <div class="pf-v6-c-login__main-header">
+        <h1 class="pf-v6-c-title pf-m-3xl" id="kc-page-title"><!-- template: login-otp.ftl -->
+
+        Sign in with a one-time code
+</h1>
+      </div>
+      <div class="pf-v6-c-login__main-body">
+                <div class="pf-v6-c-form pf-v6-u-w-100 pf-v6-u-mb-md">
+<!-- template: login-otp.ftl -->
+
+
+<div class="pf-v6-c-form__group">
+    <div class="pf-v6-c-form__group-label">
+        <label for="kc-attempted-username" class="pf-v6-c-form__label">
+        <span class="pf-v6-c-form__label-text">
+                Username or email
+
+        </span>
+        </label>
+    </div>
+
+    <div class="pf-v6-c-form__group-control">
+    <div class="pf-v6-c-input-group">
+      <div class="pf-v6-c-input-group__item pf-m-fill">
+        <span class="pf-v6-c-form-control pf-m-readonly">
+          <input id="kc-attempted-username" value="carol" readonly>
+        </span>
+      </div>
+      <div class="pf-v6-c-input-group__item">
+        <button id="reset-login" class="pf-v6-c-button pf-m-control kc-login-tooltip" type="button"
+              aria-label="Restart login" onclick="location.href='/realms/himmelcloak-test/login-actions/restart?client_id=himmelcloak-test-client&amp;tab_id=FIXTURE&amp;client_data=FIXTURE&amp;skip_logout=false'">
+            <span class="pf-v6-c-button__icon">
+            <i class="fa-sync-alt fas" aria-hidden="true"></i>
+            </span>
+            <span class="kc-tooltip-text">Restart login</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="input-error-container-kc-attempted-username" class="pf-v6-c-form__helper-text" aria-live="polite" hidden>
+    </div>
+    </div>
+</div>
+
+                </div>
+
+
+<!-- template: login-otp.ftl -->
+
+        <form id="kc-otp-login-form" class="pf-v6-c-form pf-v6-u-w-100" onsubmit="login.disabled = true; return true;" action="https://keycloak.test:8443/realms/himmelcloak-test/login-actions/authenticate?session_code=FIXTURE&amp;execution=FIXTURE&amp;client_id=himmelcloak-test-client&amp;tab_id=FIXTURE&amp;client_data=FIXTURE" method="post">
+                <div class="pf-v6-c-form__group" role="radiogroup" aria-labelledby="kc-otp-credential-selection-label">
+                    <div class="pf-v6-c-form__group-label">
+                        <span id="kc-otp-credential-selection-label" class="pf-v6-c-form__label">Choose an authenticator</span>
+                    </div>
+                    <div class=" pf-v6-c-form__group-control pf-m-stack kc-otp-credential-selection">
+    <div class="pf-v6-c-card pf-m-selectable pf-m-compact">
+        <div class="pf-v6-c-card__header">
+            <div class="pf-v6-c-card__actions pf-m-no-offset">
+                <div class="pf-v6-c-card__selectable-actions">
+                    <div class="pf-v6-c-radio">
+                        <input id="kc-otp-credential-0" class="pf-v6-c-radio__input" type="radio" name="selectedCredentialId" value="00000000-0000-4000-8000-000000000001" aria-labelledby="kc-otp-credential-title-0" checked="checked">
+                        <label for="kc-otp-credential-0" class="pf-v6-c-radio__label"></label>
+                    </div>
+                </div>
+            </div>
+            <div class="pf-v6-c-card__header-main">
+                <div class="pf-v6-c-card__title">
+                    <span id="kc-otp-credential-title-0" class="pf-v6-c-card__title-text">
+                        <i class="fa fa-mobile pf-v6-u-mr-sm" aria-hidden="true"></i>
+                            Authenticator app
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="pf-v6-c-card pf-m-selectable pf-m-compact">
+        <div class="pf-v6-c-card__header">
+            <div class="pf-v6-c-card__actions pf-m-no-offset">
+                <div class="pf-v6-c-card__selectable-actions">
+                    <div class="pf-v6-c-radio">
+                        <input id="kc-otp-credential-1" class="pf-v6-c-radio__input" type="radio" name="selectedCredentialId" value="00000000-0000-4000-8000-000000000002" aria-labelledby="kc-otp-credential-title-1" >
+                        <label for="kc-otp-credential-1" class="pf-v6-c-radio__label"></label>
+                    </div>
+                </div>
+            </div>
+            <div class="pf-v6-c-card__header-main">
+                <div class="pf-v6-c-card__title">
+                    <span id="kc-otp-credential-title-1" class="pf-v6-c-card__title-text">
+                        <i class="fa fa-mobile pf-v6-u-mr-sm" aria-hidden="true"></i>
+                            Hardware token
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+                    </div>
+                </div>
+
+
+<div class="pf-v6-c-form__group">
+    <div class="pf-v6-c-form__group-label">
+        <label for="otp" class="pf-v6-c-form__label">
+        <span class="pf-v6-c-form__label-text">
+            One-time code
+        </span>
+        </label>
+    </div>
+
+    <div class="pf-v6-c-form__group-control">
+    <span class="pf-v6-c-form-control ">
+        <input id="otp" name="otp" value="" type="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" autofocus
+                
+                inputmode="numeric"
+                />
+    </span>
+
+    <div id="input-error-container-otp" class="pf-v6-c-form__helper-text" aria-live="polite" hidden>
+    </div>
+    </div>
+</div>
+
+
+  <div class="pf-v6-c-form__group">
+    <div class="pf-v6-c-form__actions pf-v6-u-pt-xs pf-v6-u-flex-wrap">
+  <button class="pf-v6-c-button pf-m-primary pf-m-block" name="login" id="kc-login"
+          type="submit" >
+  Sign In
+  </button>
+    </div>
+  </div>
+        </form>
+
+
+
+          <div class="pf-v6-c-login__main-footer">
+<!-- template: login-otp.ftl -->
+
+
+          </div>
+      </div>
+
+        <div class="pf-v6-c-login__main-footer">
+        </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>

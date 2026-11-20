@@ -100,16 +100,20 @@ sys.stdout.write(re.sub(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", stable, 
 }
 
 capture() {
-    local theme=$1 user=$2 secret=${4:-$password} jar="$work/cookies" page action query
+    local theme=$1 user=$2 secret=${4:-$password} code=${5:-} jar="$work/cookies" page action query
     rm -f "$jar"
     query="client_id=$client&response_type=code&scope=openid&state=fixture-state&nonce=fixture-nonce"
     query+="&redirect_uri=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$redirect")"
     page=$("${kc_curl[@]}" -c "$jar" -b "$jar" "$kc/realms/$realm/protocol/openid-connect/auth?$query")
     printf '%s' "$page" | scrub > "$out_dir/$theme/login.html"
     action=$(printf '%s' "$page" | form_action)
-    "${kc_curl[@]}" -c "$jar" -b "$jar" "$action" \
-        --data-urlencode "username=$user" --data-urlencode "password=$secret" |
-        scrub > "$out_dir/$theme/$3"
+    page=$("${kc_curl[@]}" -c "$jar" -b "$jar" "$action" \
+        --data-urlencode "username=$user" --data-urlencode "password=$secret")
+    if [[ -n "$code" ]]; then
+        action=$(printf '%s' "$page" | form_action)
+        page=$("${kc_curl[@]}" -c "$jar" -b "$jar" "$action" --data-urlencode "otp=$code")
+    fi
+    printf '%s\n' "$page" | scrub > "$out_dir/$theme/$3"
 }
 
 mkdir -p "$out_dir/base" "$out_dir/keycloak.v2"
@@ -130,6 +134,8 @@ for theme in keycloak.v2 base; do
     capture "$theme" carol login-otp-devices.html
     # Keycloak answers a wrong password with the login page again, carrying its error.
     capture "$theme" alice login-wrong-password.html wrong-password
+    # And a wrong one-time code with the code page again, carrying its error.
+    capture "$theme" bob login-otp-wrong-code.html "$password" 0000000
     echo "captured $theme"
 done
 

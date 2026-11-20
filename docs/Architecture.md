@@ -75,9 +75,11 @@ theme, `input-error-<field>` in `keycloak.v2`. The classifier keys on those
 element IDs, never on the text, and the driver then ends the login with
 `AuthStep::Failed` carrying Keycloak's message, cleaned of control characters
 for the terminal. The caller starts a new login to try again. Identity-first
-pages and update-password are later password-slice work. A page without a
-handler, such as the one-time-code page until its slice lands, still ends the
-login with `UnsupportedFactor`.
+pages and update-password are later password-slice work. With the `totp`
+feature, the one-time-code page is handled too: it asks for the code, listing
+the devices only when Keycloak offers a choice, and a wrong code ends the login
+with `AuthStep::Failed`. A page without a handler, such as WebAuthn, still ends
+the login with `UnsupportedFactor`.
 
 Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each
 `AuthFlow` owns its own cookie jar, which keeps libcurl's cookie lines per exact
@@ -210,7 +212,7 @@ Docker. See [Testing](Testing.md).
 | Method | Intended mechanism | Current status |
 | --- | --- | --- |
 | Password | Direct Access Grant; native flow | Direct grant implemented; native username-and-password login through the public API, live-tested with direct grants disabled; identity-first and update-password pending |
-| TOTP / HOTP | wolfCrypt HMAC generation and verification; Direct Access Grant; later native flow | SHA-1, SHA-256, and SHA-512 generation and verification implemented; Keycloak credential persistence and live TOTP fixture pending |
+| TOTP / HOTP | wolfCrypt HMAC generation and verification; Direct Access Grant; later native flow | SHA-1, SHA-256, and SHA-512 generation and verification implemented; direct-grant TOTP and HOTP and native one-time-code login with device selection live-tested; Keycloak credential persistence pending |
 | WebAuthn / passkeys | Native flow and authenticator adapter | Virtual adapter registration and sign-in live-tested; production WebAuthn page handler pending |
 | SMS / email OTP | Native flow | Planned |
 | Recovery codes | Native flow | Planned |
