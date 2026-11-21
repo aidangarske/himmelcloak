@@ -191,6 +191,11 @@ make demo    # interactive test-login against Keycloak, then Keycloak's event lo
 make clean   # stop Keycloak and remove the test containers and volumes
 ```
 
+On SELinux hosts using Podman through Docker compatibility, the Compose bind
+mounts use `:z` to give the checkout and Keycloak fixtures a shared container
+label. This lets the tester read `/work/Cargo.toml` and keeps the overlapping
+Keycloak mounts accessible when both containers run.
+
 `make help` lists the individual steps:
 
 | Target | Runs |
