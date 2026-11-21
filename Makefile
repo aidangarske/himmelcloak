@@ -63,7 +63,7 @@ test-live-verbose: ## Live suite with each step and Keycloak's event log
 	tests/keycloak/run.sh --verbose
 
 shell: image ## Shell in the build container with the repo at /work
-	$(COMPOSE) run --rm --no-deps --entrypoint bash tester
+	$(IN_DOCKER) bash -i
 
 oracle-up: ## Start Keycloak in the background
 	tests/keycloak/bootstrap-cert.sh
