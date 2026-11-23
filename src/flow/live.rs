@@ -51,6 +51,8 @@ const PASSWORD: &str = "correct-horse-battery-staple";
 #[cfg(all(feature = "password", feature = "totp"))]
 const TOTP_SHA1_SECRET: &[u8] = b"12345678901234567890";
 #[cfg(all(feature = "password", feature = "totp"))]
+const METHOD_CHOICE_TOTP_SECRET: &[u8] = b"method-choice-secret";
+#[cfg(all(feature = "password", feature = "totp"))]
 const TOTP_SHA256_SECRET: &[u8] = b"12345678901234567890123456789012";
 #[cfg(all(feature = "password", feature = "totp"))]
 const HOTP_SHA1_SECRET: &[u8] = b"12345678901234567890";
@@ -591,6 +593,88 @@ fn wrong_totp(secret: &[u8], algorithm: OtpAlgorithm, digits: u32) -> String {
             return candidate;
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "requires a live Keycloak server and test CA"]
+#[cfg(all(feature = "password", feature = "totp"))]
+async fn live_method_selection_returns_to_the_code_factor_and_completes_login() {
+    let config = config_for_client("himmelcloak-method-choice");
+    let app = PublicClientApplication::with_config(config.clone())
+        .await
+        .unwrap();
+
+    trace("log method-choice in to its default OTP challenge, with WebAuthn also enrolled");
+    let (mut flow, devices) = at_code_page(&app, "method-choice").await;
+    assert!(devices.is_empty());
+    assert!(flow.can_try_another_way());
+
+    trace("open Keycloak's method selector without submitting a code");
+    let step = app
+        .continue_auth_flow(&mut flow, Answer::TryAnotherWay)
+        .await
+        .unwrap();
+    let AuthStep::Challenge(Challenge::ChooseMethod { methods }) = step else {
+        panic!("Try another way must present Keycloak's available methods");
+    };
+    assert!(
+        methods.len() >= 2,
+        "both enrolled second factors must be offered"
+    );
+    let ids: std::collections::HashSet<_> = methods.iter().map(|method| &method.id).collect();
+    assert_eq!(ids.len(), methods.len());
+    assert!(methods
+        .iter()
+        .all(|method| !method.id.is_empty() && !method.label.is_empty()));
+    assert!(!flow.can_try_another_way());
+    // The fixture uses Keycloak's English messages. Labels identify the test's choice only;
+    // the production parser and driver identify methods by their offered execution IDs.
+    let otp = methods
+        .iter()
+        .find(|method| {
+            method
+                .label
+                .to_ascii_lowercase()
+                .contains("authenticator application")
+        })
+        .expect("Keycloak's authenticator-application method")
+        .id
+        .clone();
+
+    trace("select the offered OTP execution and finish through the ordinary code handler");
+    let step = app
+        .continue_auth_flow(&mut flow, Answer::ChooseMethod(otp))
+        .await
+        .unwrap();
+    let AuthStep::Challenge(Challenge::OneTimeCode { devices }) = step else {
+        panic!("selecting OTP must return to the existing one-time-code handler");
+    };
+    assert!(devices.is_empty());
+    assert!(flow.can_try_another_way());
+    let code = unspent_totp(METHOD_CHOICE_TOTP_SECRET, OtpAlgorithm::Sha1, 6);
+    let step = app
+        .continue_auth_flow(&mut flow, Answer::OneTimeCode { code, device: None })
+        .await
+        .unwrap();
+    let AuthStep::Complete(tokens) = step else {
+        panic!("the selected OTP method must complete the same login");
+    };
+    assert!(tokens.id_token.is_some());
+    assert!(tokens
+        .verified_subject
+        .as_deref()
+        .is_some_and(|subject| !subject.is_empty()));
+    assert_eq!(
+        tokens.verified_issuer.as_deref(),
+        Some(config.issuer().unwrap().as_str())
+    );
+    assert_eq!(
+        app.userinfo(&tokens).await.unwrap()["preferred_username"],
+        "method-choice"
+    );
+    assert!(!flow.is_active());
+    assert!(!flow.can_try_another_way());
+    trace("Keycloak accepted the selected factor and returned verified tokens");
 }
 
 #[tokio::test]

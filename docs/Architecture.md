@@ -81,6 +81,23 @@ the devices only when Keycloak offers a choice, and a wrong code ends the login
 with `AuthStep::Failed`. A page without a handler, such as WebAuthn, still ends
 the login with `UnsupportedFactor`.
 
+When Keycloak offers "Try another way", `AuthFlow::can_try_another_way()` is
+true while the current challenge is waiting. The caller can send
+`Answer::TryAnotherWay` instead of answering that challenge. The driver drops
+the page's unfinished answers and submits only the separate navigation form.
+The resulting chooser yields `Challenge::ChooseMethod` with Keycloak's labels
+and execution IDs; `Answer::ChooseMethod(id)` must select one of those IDs.
+The returned page goes through the existing factor handler in the same login,
+with the same cookies, client binding, state, nonce, PKCE verifier, and deadline.
+Switching never restarts an ended login or supplies an answer to the old factor.
+
+The chooser supports the stock `base` theme's submit buttons and
+`keycloak.v2`'s separate forms. Each form must share the same validated action
+and session values. The parser binds each label to its form without executing
+JavaScript. Other extra forms, unexpected fields, duplicate execution IDs, and
+choices the page did not offer are refused. Selecting an unsupported factor
+still ends the login with `UnsupportedFactor`.
+
 Page fetching (`src/flow/fetch.rs`) is in place beneath the driver. Each
 `AuthFlow` owns its own cookie jar, which keeps libcurl's cookie lines per exact
 origin (scheme, host, and port), sends them only back to that origin, and is
@@ -99,7 +116,9 @@ Keycloak. The form must use POST and post over HTTPS to the page's own site at
 charter Table 2 lists are posted (`username`, `password`, `credentialId` on the
 login page; `otp`, `selectedCredentialId` on the code page), starting from the
 page's own values. An answer for a field the page lacks, a repeated answer, or a
-device the page did not offer is refused before anything is sent.
+device the page did not offer is refused before anything is sent. A method
+chooser posts only the chosen `authenticationExecution`; its navigation form
+posts only `tryAnotherWay=on`, without username, password, or code fields.
 
 A form post that never reached Keycloak is sent once more after 250 ms, unless
 the login's time limit has passed by then: answers are never sent after the

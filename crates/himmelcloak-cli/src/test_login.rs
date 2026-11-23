@@ -20,7 +20,9 @@
  */
 
 use himmelcloak::config::Config;
-use himmelcloak::{Answer, AuthStep, Challenge, OtpDevice, PublicClientApplication, Start};
+use himmelcloak::{
+    Answer, AuthMethod, AuthStep, Challenge, OtpDevice, PublicClientApplication, Start,
+};
 use serde::Deserialize;
 use std::io::{self, Write};
 use std::{fs, path::Path, path::PathBuf};
@@ -188,6 +190,66 @@ fn device_menu(devices: &[OtpDevice]) -> String {
         .collect()
 }
 
+fn method_menu(methods: &[AuthMethod]) -> LoginResult<String> {
+    if methods.is_empty() {
+        return Err("no sign-in methods were offered");
+    }
+    let mut menu = String::new();
+    for (index, method) in methods.iter().enumerate() {
+        let label: String = method.label.chars().filter(|c| !c.is_control()).collect();
+        if method.id.is_empty() || label.trim().is_empty() {
+            return Err("invalid sign-in method");
+        }
+        menu.push_str(&format!("  {}) {label}\n", index + 1));
+    }
+    Ok(menu)
+}
+
+fn method_answer(input: &str, methods: &[AuthMethod]) -> LoginResult<Answer> {
+    // Check the entire offered list before accepting an index into it.
+    method_menu(methods)?;
+    let index = parse_method_choice(input, methods.len())?;
+    Ok(Answer::ChooseMethod(methods[index].id.clone()))
+}
+
+fn choose_method(methods: &[AuthMethod]) -> LoginResult<Answer> {
+    print!("Choose a sign-in method:\n{}", method_menu(methods)?);
+    let choice = read_input(&format!("Method [1-{}]: ", methods.len()), false)?;
+    method_answer(&choice, methods)
+}
+
+fn parse_method_choice(input: &str, count: usize) -> LoginResult<usize> {
+    match input.trim().parse::<usize>() {
+        Ok(choice) if (1..=count).contains(&choice) => Ok(choice - 1),
+        _ => Err("invalid method choice"),
+    }
+}
+
+/// Refuse repeated factors before offering navigation; switching never restores an attempt.
+fn offer_method_switch(
+    challenge: &Challenge,
+    password_submitted: bool,
+    code_submitted: bool,
+    offered: bool,
+) -> LoginResult<bool> {
+    match challenge {
+        Challenge::Username | Challenge::Password if password_submitted => Err("login failed"),
+        Challenge::OneTimeCode { .. } if code_submitted => Err("login failed"),
+        Challenge::Password | Challenge::OneTimeCode { .. } => Ok(offered),
+        _ => Ok(false),
+    }
+}
+
+fn parse_method_switch(input: &str) -> LoginResult<bool> {
+    Ok(parse_method_choice(input, 2)? == 1)
+}
+
+fn try_another_way() -> LoginResult<bool> {
+    print!("  1) Continue with this sign-in method\n  2) Try another way\n");
+    let choice = read_input("Sign-in option [1-2]: ", false)?;
+    parse_method_switch(&choice)
+}
+
 /// Authenticator apps show codes in groups, such as `546 708`, and users type them that way.
 fn strip_code_spaces(code: &mut String) -> LoginResult<()> {
     code.retain(|c| !c.is_whitespace());
@@ -232,41 +294,62 @@ async fn login(config: Config) -> LoginResult<()> {
     let mut code_submitted = false;
 
     loop {
-        let answer = match step {
+        let challenge = match step {
             AuthStep::Complete(_) => return Ok(()),
             AuthStep::Failed { .. } => return Err("login failed"),
-            AuthStep::Challenge(Challenge::Username | Challenge::Password)
-                if password_submitted =>
-            {
-                flow.cancel();
-                return Err("login failed");
-            }
-            AuthStep::Challenge(Challenge::OneTimeCode { .. }) if code_submitted => {
-                flow.cancel();
-                return Err("login failed");
-            }
-            AuthStep::Challenge(Challenge::Username) => {
-                let mut username = read_input("Username: ", false)?;
-                Answer::Username(std::mem::take(&mut *username))
-            }
-            AuthStep::Challenge(Challenge::Password) => {
-                let mut password = read_input("Password: ", true)?;
-                password_submitted = true;
-                Answer::Password(std::mem::take(&mut *password))
-            }
-            AuthStep::Challenge(Challenge::OneTimeCode { devices }) => {
-                let device = choose_device(&devices)?;
-                let mut code = read_input("One-time code: ", true)?;
-                strip_code_spaces(&mut code)?;
-                code_submitted = true;
-                Answer::OneTimeCode {
-                    code: std::mem::take(&mut *code),
-                    device,
-                }
-            }
+            AuthStep::Challenge(challenge) => challenge,
             _ => {
                 flow.cancel();
-                return Err("this command supports password and one-time-code login only");
+                return Err("unsupported login step");
+            }
+        };
+        if !flow.is_active() {
+            return Err("login failed");
+        }
+        let offered = flow.can_try_another_way();
+        let offer_switch =
+            match offer_method_switch(&challenge, password_submitted, code_submitted, offered) {
+                Ok(offered) => offered,
+                Err(error) => {
+                    flow.cancel();
+                    return Err(error);
+                }
+            };
+        let answer = if offer_switch && try_another_way()? {
+            Answer::TryAnotherWay
+        } else {
+            // Time spent choosing a method must not lead to a secret prompt after expiry.
+            if !flow.is_active() {
+                return Err("login failed");
+            }
+            match challenge {
+                Challenge::Username => {
+                    let mut username = read_input("Username: ", false)?;
+                    Answer::Username(std::mem::take(&mut *username))
+                }
+                Challenge::Password => {
+                    let mut password = read_input("Password: ", true)?;
+                    password_submitted = true;
+                    Answer::Password(std::mem::take(&mut *password))
+                }
+                Challenge::OneTimeCode { devices } => {
+                    let device = choose_device(&devices)?;
+                    if !flow.is_active() {
+                        return Err("login failed");
+                    }
+                    let mut code = read_input("One-time code: ", true)?;
+                    strip_code_spaces(&mut code)?;
+                    code_submitted = true;
+                    Answer::OneTimeCode {
+                        code: std::mem::take(&mut *code),
+                        device,
+                    }
+                }
+                Challenge::ChooseMethod { methods } => choose_method(&methods)?,
+                _ => {
+                    flow.cancel();
+                    return Err("this command supports password and one-time-code login only");
+                }
             }
         };
 
@@ -290,10 +373,11 @@ pub fn run(path: &Path) -> LoginResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_device, device_menu, parse_device_choice, parse_login_config, start_error,
-        strip_code_spaces,
+        choose_device, device_menu, method_answer, method_menu, offer_method_switch,
+        parse_device_choice, parse_login_config, parse_method_choice, parse_method_switch,
+        start_error, strip_code_spaces,
     };
-    use himmelcloak::OtpDevice;
+    use himmelcloak::{Answer, AuthMethod, Challenge, OtpDevice};
     use std::path::PathBuf;
 
     #[test]
@@ -344,6 +428,107 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn method_menu_numbers_methods_and_drops_control_characters() {
+        let methods = [
+            AuthMethod::new("password-execution".into(), "Password".into()),
+            AuthMethod::new("otp-execution".into(), "Token\u{1b}[2J\r\nfake".into()),
+        ];
+        assert_eq!(
+            method_menu(&methods).unwrap(),
+            "  1) Password\n  2) Token[2Jfake\n"
+        );
+        assert!(matches!(
+            method_answer(" 2 ", &methods).as_ref(),
+            Ok(Answer::ChooseMethod(id)) if id == "otp-execution"
+        ));
+    }
+
+    #[test]
+    fn method_selection_rejects_empty_menus_and_invalid_choices() {
+        assert_eq!(method_menu(&[]), Err("no sign-in methods were offered"));
+        assert_eq!(
+            method_answer("1", &[]).err(),
+            Some("no sign-in methods were offered")
+        );
+        for method in [
+            AuthMethod::new(String::new(), "Password".into()),
+            AuthMethod::new("execution".into(), " \r\n\u{1b}".into()),
+        ] {
+            assert_eq!(method_menu(&[method]), Err("invalid sign-in method"));
+        }
+        let methods = [AuthMethod::new("execution".into(), "Password".into())];
+        for bad in ["0", "2", "-1", "one", "", "1.5", "\u{1b}1"] {
+            assert_eq!(
+                method_answer(bad, &methods).err(),
+                Some("invalid method choice")
+            );
+        }
+        assert_eq!(parse_method_choice("1", 0), Err("invalid method choice"));
+    }
+
+    #[test]
+    fn switching_has_a_separate_visible_choice() {
+        assert_eq!(parse_method_switch("1"), Ok(false));
+        assert_eq!(parse_method_switch(" 2 "), Ok(true));
+        for bad in ["0", "3", "", "password", "123456"] {
+            assert_eq!(parse_method_switch(bad), Err("invalid method choice"));
+        }
+        for challenge in [
+            Challenge::Password,
+            Challenge::OneTimeCode { devices: vec![] },
+        ] {
+            assert_eq!(
+                offer_method_switch(&challenge, false, false, true),
+                Ok(true)
+            );
+            assert_eq!(
+                offer_method_switch(&challenge, false, false, false),
+                Ok(false)
+            );
+        }
+        for challenge in [
+            Challenge::Username,
+            Challenge::ChooseMethod {
+                methods: vec![AuthMethod::new("execution".into(), "Password".into())],
+            },
+        ] {
+            assert_eq!(
+                offer_method_switch(&challenge, false, false, true),
+                Ok(false)
+            );
+        }
+    }
+
+    #[test]
+    fn switching_does_not_restore_a_previously_submitted_attempt() {
+        for challenge in [Challenge::Username, Challenge::Password] {
+            assert_eq!(
+                offer_method_switch(&challenge, true, false, true),
+                Err("login failed")
+            );
+        }
+        assert_eq!(
+            offer_method_switch(
+                &Challenge::OneTimeCode { devices: vec![] },
+                false,
+                true,
+                true
+            ),
+            Err("login failed")
+        );
+        // Finishing the password does not prohibit selecting or answering the next factor.
+        assert_eq!(
+            offer_method_switch(
+                &Challenge::OneTimeCode { devices: vec![] },
+                true,
+                false,
+                true
+            ),
+            Ok(true)
+        );
     }
 
     #[test]

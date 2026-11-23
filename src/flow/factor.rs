@@ -25,7 +25,7 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::flow::classify::PageKind;
-use crate::flow::{Answer, Challenge, OtpDevice};
+use crate::flow::{Answer, AuthMethod, Challenge, OtpDevice};
 
 /// One factor's handling of the pages it owns.
 pub(crate) trait PageFactor: Send + Sync {
@@ -55,8 +55,46 @@ impl Factors for Builtin {
         match kind {
             PageKind::UsernamePassword { .. } => Some(&PasswordFactor),
             PageKind::OneTimeCode { .. } if cfg!(feature = "totp") => Some(&OtpFactor),
+            PageKind::ChooseMethod { .. } => Some(&MethodFactor),
             _ => None,
         }
+    }
+}
+
+/// Keycloak's method chooser posts the selected execution without answering a factor.
+pub(crate) struct MethodFactor;
+
+impl PageFactor for MethodFactor {
+    fn challenges(&self, kind: &PageKind, _login_hint: Option<&str>) -> Result<Vec<Challenge>> {
+        match kind {
+            PageKind::ChooseMethod { methods } => Ok(vec![Challenge::ChooseMethod {
+                methods: methods
+                    .iter()
+                    .map(|method| AuthMethod::new(method.id.clone(), method.label.clone()))
+                    .collect(),
+            }]),
+            _ => Err(Error::UnsupportedFactor),
+        }
+    }
+
+    fn fields(
+        &self,
+        kind: &PageKind,
+        answers: &[Answer],
+    ) -> Result<Vec<(String, Zeroizing<String>)>> {
+        let (PageKind::ChooseMethod { methods }, [Answer::ChooseMethod(id)]) = (kind, answers)
+        else {
+            return Err(Error::Protocol(
+                "answer does not belong to the method chooser",
+            ));
+        };
+        if !methods.iter().any(|method| method.id == *id) {
+            return Err(Error::Protocol("method not offered"));
+        }
+        Ok(vec![(
+            "authenticationExecution".to_owned(),
+            Zeroizing::new(id.clone()),
+        )])
     }
 }
 
@@ -141,10 +179,10 @@ impl PageFactor for OtpFactor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Builtin, Factors, OtpFactor, PageFactor, PasswordFactor};
+    use super::{Builtin, Factors, MethodFactor, OtpFactor, PageFactor, PasswordFactor};
     use crate::error::Error;
     use crate::flow::classify::PageKind;
-    use crate::flow::{Answer, Challenge, OtpDevice};
+    use crate::flow::{Answer, AuthMethod, Challenge, OtpDevice};
 
     fn login_page() -> PageKind {
         PageKind::UsernamePassword { error: None }
@@ -168,13 +206,50 @@ mod tests {
     }
 
     #[test]
-    fn builtin_handles_the_login_and_code_pages_only() {
+    fn builtin_handles_login_code_and_method_choice_pages() {
         assert!(Builtin.for_page(&login_page()).is_some());
         assert_eq!(
             Builtin.for_page(&code_page(&[])).is_some(),
             cfg!(feature = "totp")
         );
         assert!(Builtin.for_page(&PageKind::Unknown).is_none());
+        assert!(Builtin
+            .for_page(&PageKind::ChooseMethod {
+                methods: Vec::new()
+            })
+            .is_some());
+    }
+
+    #[test]
+    fn choosing_a_method_posts_only_an_execution_the_page_offered() {
+        let page = PageKind::ChooseMethod {
+            methods: vec![
+                AuthMethod::new("password-execution".into(), "Password".into()),
+                AuthMethod::new("otp-execution".into(), "Authenticator code".into()),
+            ],
+        };
+        let challenges = MethodFactor.challenges(&page, None).unwrap();
+        let [Challenge::ChooseMethod { methods }] = challenges.as_slice() else {
+            panic!("the method chooser must ask exactly one choice");
+        };
+        assert_eq!(methods[0].id, "password-execution");
+        assert_eq!(methods[1].label, "Authenticator code");
+        let fields = MethodFactor
+            .fields(&page, &[Answer::ChooseMethod("otp-execution".into())])
+            .unwrap();
+        assert_eq!(
+            posted(&fields),
+            [("authenticationExecution", "otp-execution")]
+        );
+        assert_eq!(
+            MethodFactor
+                .fields(&page, &[Answer::ChooseMethod("unknown".into())])
+                .err(),
+            Some(Error::Protocol("method not offered"))
+        );
+        assert!(MethodFactor
+            .fields(&page, &[Answer::TryAnotherWay])
+            .is_err());
     }
 
     #[test]

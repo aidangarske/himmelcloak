@@ -29,13 +29,13 @@
 //!   required action -> kc_action marker / action page
 //! Only a Keycloak MAJOR-version core change should break this, caught by the CI version matrix.
 //!
-//! The login and one-time-code pages are classified today. A page is matched only when every
-//! named field in its single form is on that page's allow-list; anything else is `Unknown`, and
-//! the flow denies it rather than guess.
+//! Login, one-time-code and method-selection pages are classified today. Each form has its own
+//! field allow-list; the only auxiliary form a factor page accepts is "try another way".
+//! Anything else is `Unknown`, and the flow denies it rather than guess.
 use html5gum::{DefaultEmitter, HtmlString, StartTag, Token, Tokenizer};
 use zeroize::Zeroize;
 
-use crate::flow::OtpDevice;
+use crate::flow::{AuthMethod, OtpDevice};
 
 /// Element ID prefix both themes give each OTP device: the radio input in `base`, the tile in
 /// `keycloak.v2`.
@@ -60,6 +60,9 @@ pub(crate) enum PageKind {
         devices: Vec<OtpDevice>,
         error: Option<String>,
     },
+    /// Stock Keycloak's authenticator-selection page, whose IDs are execution IDs, not
+    /// credential/device IDs.
+    ChooseMethod { methods: Vec<AuthMethod> },
     /// Any other page, or a known page with unexpected fields. The flow denies it.
     Unknown,
 }
@@ -69,7 +72,7 @@ impl PageKind {
     pub(crate) fn rejection(&self) -> Option<&str> {
         match self {
             Self::UsernamePassword { error } | Self::OneTimeCode { error, .. } => error.as_deref(),
-            Self::Unknown => None,
+            Self::ChooseMethod { .. } | Self::Unknown => None,
         }
     }
 }
@@ -92,6 +95,30 @@ pub(super) struct Control {
     pub(super) value: String,
     /// Whether a radio or checkbox starts selected; a browser submits only those.
     pub(super) checked: bool,
+    /// Only enabled submit buttons and hidden fields are valid method choices.
+    element: String,
+    disabled: bool,
+    text: String,
+}
+
+/// Forms stay separate: choosing another method must never submit the primary form's secrets.
+#[derive(Default)]
+pub(super) struct ScannedForm {
+    id: Option<String>,
+    pub(super) action: Option<String>,
+    pub(super) method: Option<String>,
+    pub(super) controls: Vec<Control>,
+    /// keycloak.v2 puts the clickable label immediately outside its method's hidden form.
+    method_text: Option<String>,
+}
+
+impl ScannedForm {
+    fn is_navigation(&self) -> bool {
+        self.id.as_deref() == Some("kc-select-try-another-way-form")
+            && matches!(self.controls.as_slice(), [control]
+                if control.name == "tryAnotherWay" && control.kind == "hidden"
+                    && control.element == "input" && control.value == "on" && !control.disabled)
+    }
 }
 
 /// An element whose ID is `kc-otp-credential-N`.
@@ -110,6 +137,8 @@ enum Target {
     Title(String),
     Tile(usize),
     FieldError,
+    MethodButton(usize, usize),
+    MethodTile(usize),
 }
 
 /// Whether `id` marks Keycloak's message for a rejected field: `input-error` in `base`,
@@ -135,12 +164,8 @@ struct Capture {
 /// is only ever submitted from a page this module recognised.
 #[derive(Default)]
 pub(super) struct Scan {
-    forms: usize,
-    in_form: bool,
-    /// The form's `action` and `method` attributes, as written on the page.
-    pub(super) action: Option<String>,
-    pub(super) method: Option<String>,
-    pub(super) controls: Vec<Control>,
+    pub(super) forms: Vec<ScannedForm>,
+    in_form: Option<usize>,
     labels: Vec<(String, String)>,
     /// Text of elements a device radio names through `aria-labelledby`, keyed by their ID.
     titles: Vec<(String, String)>,
@@ -159,9 +184,11 @@ pub(super) struct Scan {
 impl Drop for Scan {
     fn drop(&mut self) {
         // The action carries the session code; field values can be prefilled from the page.
-        self.action.zeroize();
-        for control in &mut self.controls {
-            control.value.zeroize();
+        for form in &mut self.forms {
+            form.action.zeroize();
+            for control in &mut form.controls {
+                control.value.zeroize();
+            }
         }
     }
 }
@@ -186,6 +213,7 @@ impl Scan {
                 _ => {}
             }
         }
+        scan.suspicious |= scan.in_form.is_some();
         scan
     }
 
@@ -203,12 +231,15 @@ impl Scan {
             }
         }
         match name {
-            b"form" if self.in_form => self.suspicious = true,
+            b"form" if self.in_form.is_some() => self.suspicious = true,
             b"form" => {
-                self.in_form = true;
-                self.forms += 1;
-                self.action = attribute(tag, "action");
-                self.method = attribute(tag, "method");
+                self.in_form = Some(self.forms.len());
+                self.forms.push(ScannedForm {
+                    id: attribute(tag, "id"),
+                    action: attribute(tag, "action"),
+                    method: attribute(tag, "method"),
+                    ..ScannedForm::default()
+                });
             }
             b"input" | b"select" | b"textarea" | b"button" => self.control(tag),
             b"label" => {
@@ -217,6 +248,20 @@ impl Scan {
                 }
             }
             _ => {}
+        }
+        // This is a fixed stock-template call, never arbitrary JavaScript to execute. Its
+        // ordinal binds the label to one of keycloak.v2's otherwise empty-looking forms.
+        if name == b"div" && attribute(tag, "role").as_deref() == Some("button") {
+            if let Some(index) = attribute(tag, "onclick").and_then(|call| method_form(&call)) {
+                if self.in_form.is_some()
+                    || index >= self.forms.len()
+                    || self.forms[index].method_text.is_some()
+                {
+                    self.suspicious = true;
+                } else {
+                    self.begin(Target::MethodTile(index), name, tag.self_closing);
+                }
+            }
         }
         if attribute(tag, "id").is_some_and(|id| is_field_error(&id)) {
             self.begin(Target::FieldError, name, tag.self_closing);
@@ -253,30 +298,52 @@ impl Scan {
     }
 
     fn control(&mut self, tag: &StartTag<()>) {
-        // `form` and `formaction` would send a control somewhere other than its form.
-        if attribute(tag, "form").is_some() || attribute(tag, "formaction").is_some() {
+        // Submission overrides would change which form/action/method a browser uses.
+        if [
+            "form",
+            "formaction",
+            "formmethod",
+            "formenctype",
+            "formtarget",
+        ]
+        .iter()
+        .any(|name| attribute(tag, name).is_some())
+        {
             self.suspicious = true;
         }
         let Some(name) = attribute(tag, "name").filter(|name| !name.is_empty()) else {
             return;
         };
-        if !self.in_form {
+        let Some(form) = self.in_form else {
             self.suspicious = true;
             return;
-        }
+        };
         let default_kind = if tag.name.as_slice() == b"button" {
             "submit"
         } else {
             "text"
         };
-        self.controls.push(Control {
+        let control = self.forms[form].controls.len();
+        self.forms[form].controls.push(Control {
             name,
             kind: attribute(tag, "type")
                 .map(|kind| kind.to_ascii_lowercase())
                 .unwrap_or_else(|| default_kind.to_owned()),
             value: attribute(tag, "value").unwrap_or_default(),
             checked: attribute(tag, "checked").is_some(),
+            element: String::from_utf8_lossy(tag.name.as_slice()).into_owned(),
+            disabled: attribute(tag, "disabled").is_some(),
+            text: String::new(),
         });
+        if tag.name.as_slice() == b"button"
+            && self.forms[form].controls[control].name == "authenticationExecution"
+        {
+            self.begin(
+                Target::MethodButton(form, control),
+                b"button",
+                tag.self_closing,
+            );
+        }
     }
 
     fn begin(&mut self, target: Target, tag: &[u8], self_closing: bool) {
@@ -298,7 +365,7 @@ impl Scan {
             return;
         }
         if name.as_slice() == b"form" {
-            self.in_form = false;
+            self.in_form = None;
         }
         match self.capture.take() {
             Some(mut capture) if capture.tag == name.as_slice() => {
@@ -318,6 +385,12 @@ impl Scan {
                             self.errors.push(message);
                         }
                     }
+                    Target::MethodButton(form, control) => {
+                        self.forms[form].controls[control].text = capture.text;
+                    }
+                    Target::MethodTile(form) => {
+                        self.forms[form].method_text = Some(capture.text);
+                    }
                 }
             }
             other => self.capture = other,
@@ -325,9 +398,26 @@ impl Scan {
     }
 
     pub(super) fn kind(&self) -> Option<PageKind> {
-        // Every Keycloak login page has exactly one form; a second one, even empty, is not a
-        // page we know.
-        if self.suspicious || self.forms != 1 {
+        if self.suspicious || self.forms.is_empty() {
+            return None;
+        }
+        if self.forms.iter().all(|form| {
+            !form.controls.is_empty()
+                && form
+                    .controls
+                    .iter()
+                    .all(|control| control.name == "authenticationExecution")
+        }) {
+            return self
+                .methods()
+                .map(|methods| PageKind::ChooseMethod { methods });
+        }
+        // A factor page has one primary form and, only when Keycloak advertises it, its exact
+        // separate navigation form. Other multi-form pages remain unknown.
+        if self.forms.len() > 2
+            || (self.forms.len() == 2 && self.navigation().is_none())
+            || self.forms[0].is_navigation()
+        {
             return None;
         }
         if self.has("username") && self.has("password") {
@@ -345,12 +435,67 @@ impl Scan {
         None
     }
 
+    pub(super) fn primary(&self) -> &ScannedForm {
+        &self.forms[0]
+    }
+
+    pub(super) fn navigation(&self) -> Option<&ScannedForm> {
+        self.forms.get(1).filter(|form| form.is_navigation())
+    }
+
+    fn controls(&self) -> &[Control] {
+        self.forms
+            .first()
+            .map_or(&[], |form| form.controls.as_slice())
+    }
+
+    fn methods(&self) -> Option<Vec<AuthMethod>> {
+        if !self.tiles.is_empty() {
+            return None;
+        }
+        let methods: Vec<AuthMethod> = if self.forms.len() == 1
+            && self.controls().iter().all(|control| {
+                control.element == "button" && control.kind == "submit" && !control.disabled
+            }) {
+            self.controls()
+                .iter()
+                .map(|control| AuthMethod::new(control.value.clone(), clean_label(&control.text)))
+                .collect()
+        } else {
+            self.forms
+                .iter()
+                .map(|form| {
+                    let [control] = form.controls.as_slice() else {
+                        return None;
+                    };
+                    if control.element != "input" || control.kind != "hidden" || control.disabled {
+                        return None;
+                    }
+                    Some(AuthMethod::new(
+                        control.value.clone(),
+                        clean_label(form.method_text.as_deref()?),
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?
+        };
+        if methods.is_empty()
+            || methods.iter().enumerate().any(|(i, method)| {
+                method.id.trim().is_empty()
+                    || method.label.is_empty()
+                    || methods[..i].iter().any(|earlier| earlier.id == method.id)
+            })
+        {
+            return None;
+        }
+        Some(methods)
+    }
+
     fn has(&self, name: &str) -> bool {
-        self.controls.iter().any(|control| control.name == name)
+        self.controls().iter().any(|control| control.name == name)
     }
 
     fn only(&self, allowed: &[&str]) -> bool {
-        self.controls
+        self.controls()
             .iter()
             .all(|control| allowed.contains(&control.name.as_str()))
     }
@@ -358,9 +503,9 @@ impl Scan {
     /// Each field appears once, except the device radios, which share one name. Any other
     /// radio that repeats a name is a duplicate like any other field.
     fn unique(&self) -> bool {
-        self.controls.iter().enumerate().all(|(i, control)| {
+        self.controls().iter().enumerate().all(|(i, control)| {
             (control.kind == "radio" && control.name == "selectedCredentialId")
-                || !self.controls[..i]
+                || !self.controls()[..i]
                     .iter()
                     .any(|earlier| earlier.name == control.name)
         })
@@ -396,7 +541,7 @@ impl Scan {
         }
 
         let selected: Vec<&Control> = self
-            .controls
+            .controls()
             .iter()
             .filter(|control| control.name == "selectedCredentialId")
             .collect();
@@ -426,6 +571,16 @@ impl Scan {
         };
         consistent.then_some(devices)
     }
+}
+
+fn method_form(onclick: &str) -> Option<usize> {
+    onclick
+        .trim()
+        .trim_end_matches(';')
+        .strip_prefix("document.forms[")?
+        .strip_suffix("].requestSubmit()")?
+        .parse()
+        .ok()
 }
 
 fn attribute(tag: &StartTag<()>, name: &str) -> Option<String> {
@@ -500,6 +655,16 @@ mod tests {
         include_str!("../../tests/fixtures/keycloak/base/login-otp-wrong-code.html");
     const V2_WRONG_CODE: &str =
         include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-otp-wrong-code.html");
+    const BASE_METHODS: &str =
+        include_str!("../../tests/fixtures/keycloak/base/select-authenticator.html");
+    const V2_METHODS: &str =
+        include_str!("../../tests/fixtures/keycloak/keycloak.v2/select-authenticator.html");
+    const NAVIGATION_PAGES: &[&str] = &[
+        include_str!("../../tests/fixtures/keycloak/base/login-try-another-way.html"),
+        include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-try-another-way.html"),
+        include_str!("../../tests/fixtures/keycloak/base/login-otp-try-another-way.html"),
+        include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-otp-try-another-way.html"),
+    ];
 
     /// carol's two devices from the charter's fixture realm (Table 23).
     const TOTP_DEVICE: &str = "00000000-0000-4000-8000-000000000001";
@@ -846,5 +1011,118 @@ mod tests {
         assert_eq!(devices(&marked).unwrap()[0].1, "Phone");
         let blank = V2_DEVICES.replace(&title, ">\u{7}\u{200b}<");
         assert!(is_unknown(&blank));
+    }
+
+    fn methods(html: &str) -> Option<Vec<(String, String)>> {
+        match kind(html) {
+            PageKind::ChooseMethod { methods } => Some(
+                methods
+                    .into_iter()
+                    .map(|method| (method.id, method.label))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn stock_method_selection_shapes_in_both_themes() {
+        let expected = vec![
+            ("password-execution".into(), "Password Sign in with your password".into()),
+            (
+                "otp-execution".into(),
+                "Authenticator application Enter a verification code from an authenticator application".into(),
+            ),
+        ];
+        for html in [BASE_METHODS, V2_METHODS] {
+            assert_eq!(methods(html), Some(expected.clone()));
+            assert_eq!(kind(html).rejection(), None);
+        }
+    }
+
+    #[test]
+    fn auxiliary_navigation_does_not_change_the_primary_page_kind() {
+        for (index, html) in NAVIGATION_PAGES.iter().enumerate() {
+            if index < 2 {
+                assert!(matches!(kind(html), PageKind::UsernamePassword { .. }));
+            } else {
+                assert!(matches!(kind(html), PageKind::OneTimeCode { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_method_choices_are_unknown() {
+        for html in [BASE_METHODS, V2_METHODS] {
+            for replacement in ["", " ", "password-execution"] {
+                assert!(is_unknown(&html.replace("otp-execution", replacement)));
+            }
+            assert!(is_unknown(&with_in_form(
+                html,
+                r#"<input name="password">"#
+            )));
+            assert!(is_unknown(&html.replace("</body>", "<form></form></body>")));
+            assert!(is_unknown(&html.replacen(
+                "name=\"authenticationExecution\"",
+                "formaction=\"https://evil.example\" name=\"authenticationExecution\"",
+                1,
+            )));
+            assert!(is_unknown(&html.replacen(
+                "name=\"authenticationExecution\"",
+                "disabled name=\"authenticationExecution\"",
+                1,
+            )));
+        }
+        assert!(is_unknown(
+            &BASE_METHODS.replace("type=\"submit\"", "type=\"button\"")
+        ));
+        assert!(is_unknown(
+            &V2_METHODS.replace("type=\"hidden\"", "type=\"text\"")
+        ));
+    }
+
+    #[test]
+    fn method_labels_must_be_bound_to_their_controls_and_cleaned() {
+        for call in [
+            "document.forms[9].requestSubmit()",
+            "document.forms[0].requestSubmit()",
+            "document.forms[1].requestSubmit();steal()",
+        ] {
+            assert!(is_unknown(
+                &V2_METHODS.replace("document.forms[1].requestSubmit()", call,)
+            ));
+        }
+        for html in [BASE_METHODS, V2_METHODS] {
+            let localized = html.replace("Password", "Mot\u{202e} de\u{1b} passe\n");
+            let parsed = methods(&localized).unwrap();
+            assert_eq!(parsed[0].1, "Mot de passe Sign in with your password");
+        }
+        assert!(is_unknown(
+            &BASE_METHODS
+                .replace("<div>Password</div>", "<div>\u{202e}\u{1b}</div>",)
+                .replace("Sign in with your password", "")
+        ));
+    }
+
+    #[test]
+    fn only_the_exact_auxiliary_navigation_form_is_allowed() {
+        for html in NAVIGATION_PAGES {
+            for changed in [
+                html.replace("name=\"tryAnotherWay\"", "name=\"unrecognised\""),
+                html.replace("value=\"on\"", "value=\"off\""),
+                html.replace(
+                    "type=\"hidden\" name=\"tryAnotherWay\"",
+                    "type=\"text\" name=\"tryAnotherWay\"",
+                ),
+                html.replace("name=\"tryAnotherWay\"", "disabled name=\"tryAnotherWay\""),
+                html.replace("</body>", "<form></form></body>"),
+                html.replace(
+                    "name=\"tryAnotherWay\"",
+                    "name=\"tryAnotherWay\" formmethod=\"get\"",
+                ),
+            ] {
+                assert!(is_unknown(&changed));
+            }
+        }
     }
 }

@@ -51,6 +51,12 @@ pub(crate) struct Pending {
     answers: Vec<Answer>,
 }
 
+impl Pending {
+    pub(crate) fn can_try_another_way(&self) -> bool {
+        self.form.can_try_another_way()
+    }
+}
+
 /// Start the login: fetch Keycloak's first page and return what it asks.
 pub(crate) async fn begin(
     app: &PublicClientApplication,
@@ -120,6 +126,16 @@ async fn answer_page(
     // Another client would get this login's code and PKCE verifier at its own token endpoint.
     if flow.client != app.login_client() {
         return Err(Error::Protocol("login flow belongs to another client"));
+    }
+    if matches!(answer, Answer::TryAnotherWay) {
+        pending.answers.clear();
+        pending.queue.clear();
+        let deadline = flow.deadline();
+        let fetched = pending
+            .form
+            .try_another_way(app.transport(), &mut flow.jar, deadline)
+            .await?;
+        return resolve(app, factors, flow, fetched, true).await;
     }
     pending.expect.check(&answer)?;
     pending.answers.push(answer);

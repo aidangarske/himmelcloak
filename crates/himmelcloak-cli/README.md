@@ -39,6 +39,13 @@ device labels are printed with control characters removed. Other
 challenges, including WebAuthn and required actions, end the login with
 an unsupported-challenge message.
 
+When Keycloak offers another method, the command shows a separate visible
+choice before asking for a password or code: continue with this method or
+try another way. The chooser then lists the offered methods by number and
+continues through the selected method's normal prompt. Method labels have
+control characters removed. Switching does not restore an already submitted
+password or code attempt.
+
 ### Validation
 
 Configuration tests cover missing settings, HTTPS enforcement, optional

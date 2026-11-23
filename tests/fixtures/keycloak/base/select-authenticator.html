@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<!-- Stock Keycloak 26.8.2 select-authenticator.ftl structure, with fixed session/selection IDs. -->
+<html lang="en"><body data-page-id="login-select-authenticator">
+<h1>Try Another Way</h1>
+<form id="kc-select-credential-form" action="https://keycloak.test:8443/realms/himmelcloak-test/login-actions/authenticate?session_code=FIXTURE&amp;execution=FIXTURE&amp;client_id=himmelcloak-test-client&amp;tab_id=FIXTURE&amp;client_data=FIXTURE" method="post">
+    <div>
+        <button type="submit" name="authenticationExecution" value="password-execution">
+            <div><i></i></div>
+            <div>
+                <div>Password</div>
+                <div>Sign in with your password</div>
+            </div>
+            <div></div><div><i></i></div>
+        </button>
+        <button type="submit" name="authenticationExecution" value="otp-execution">
+            <div><i></i></div>
+            <div>
+                <div>Authenticator application</div>
+                <div>Enter a verification code from an authenticator application</div>
+            </div>
+            <div></div><div><i></i></div>
+        </button>
+    </div>
+</form>
+</body></html>
