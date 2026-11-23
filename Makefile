@@ -14,8 +14,11 @@ export TESTER_IMAGE := himmelcloak-tester:$(DISTRO)
 endif
 
 CONTAINER ?= docker
-ifeq ($(filter $(CONTAINER),docker podman),)
+override CONTAINER := $(strip $(CONTAINER))
+ifneq ($(CONTAINER),docker)
+ifneq ($(CONTAINER),podman)
 $(error CONTAINER must be docker or podman)
+endif
 endif
 export CONTAINER
 
