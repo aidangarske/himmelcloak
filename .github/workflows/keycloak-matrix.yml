@@ -36,6 +36,10 @@ jobs:
           PODMAN_COMPOSE_PROVIDER=$provider podman compose version
       - name: Unit tests and lint
         run: make unit lint
+      - name: Load the PAM module
+        run: make pam-smoke
+      - name: Build a distro tester image
+        run: make image DISTRO=debian-12
       - name: Run live login suite
         run: make test-live-verbose
       - name: Keycloak logs on failure

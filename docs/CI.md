@@ -33,8 +33,8 @@ signals. Their matrix names are moving values; they are not added as required
 checks by this slice. Existing branch rules should be reviewed before replacing
 them with the minimum set above.
 
-`Keycloak latest with Podman` runs `make unit lint` and `make test-live-verbose`
-with `CONTAINER=podman` on `ubuntu-24.04`, using the runner's Podman and its Docker Compose plugin
+`Keycloak latest with Podman` runs `make unit lint`, `make pam-smoke`, a `DISTRO=debian-12`
+image build, and `make test-live-verbose` with `CONTAINER=podman` on `ubuntu-24.04`, using the runner's Podman and its Docker Compose plugin
 as the compose provider. It keeps the Podman path working and is an optional
 check, not a merge requirement.
 
