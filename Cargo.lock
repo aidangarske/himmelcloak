@@ -445,6 +445,9 @@ dependencies = [
 [[package]]
 name = "nss_himmelcloak"
 version = "0.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "num-traits"
