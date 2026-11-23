@@ -49,6 +49,8 @@ pub(crate) mod standard;
 pub(crate) mod token;
 pub(crate) mod transport;
 
+pub mod trace;
+
 // Hardware key custody. Compiled only when a hardware/seal feature is enabled.
 #[cfg(any(
     feature = "hsm-seal",

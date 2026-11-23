@@ -65,6 +65,20 @@ pub(crate) enum PageKind {
 }
 
 impl PageKind {
+    pub(crate) fn describe(&self) -> &'static str {
+        match self {
+            Self::UsernamePassword { error: None } => "login.ftl (username, password)",
+            Self::UsernamePassword { error: Some(_) } => "login.ftl (error)",
+            Self::OneTimeCode {
+                error: None,
+                devices,
+            } if devices.is_empty() => "login-otp.ftl (otp)",
+            Self::OneTimeCode { error: None, .. } => "login-otp.ftl (otp, device choice)",
+            Self::OneTimeCode { error: Some(_), .. } => "login-otp.ftl (error)",
+            Self::Unknown => "unknown",
+        }
+    }
+
     /// Keycloak's message when it sent this page back because it refused the last answers.
     pub(crate) fn rejection(&self) -> Option<&str> {
         match self {

@@ -70,6 +70,10 @@ pub(crate) async fn discover(
     if raw.issuer != expected_issuer.as_str().trim_end_matches('/') {
         return Err(Error::Protocol("discovered issuer mismatch"));
     }
+    crate::trace::step(format_args!(
+        "discovery: issuer={} ok, endpoints: authorization token jwks",
+        raw.issuer
+    ));
     Ok(Metadata {
         issuer: raw.issuer,
         authorization_endpoint: endpoint(&raw.authorization_endpoint, expected_issuer)?,
@@ -166,6 +170,15 @@ pub(crate) fn authorization_url(
     }
     let scope = normalized_scopes.join(" ");
     let challenge = pkce_challenge(pkce_verifier)?;
+    crate::trace::step(format_args!(
+        "pkce: method=S256 verifier_len={}",
+        pkce_verifier.len()
+    ));
+    crate::trace::step(format_args!(
+        "pkce: code_challenge=BASE64URL(SHA-256(verifier))={challenge}"
+    ));
+    crate::trace::step(format_args!("state={}", crate::trace::short(state)));
+    crate::trace::step(format_args!("nonce={}", crate::trace::short(nonce)));
     let mut url = endpoint.clone();
     let mut query = url.query_pairs_mut();
     query
@@ -259,6 +272,12 @@ pub(crate) async fn fetch_jwks(transport: &dyn HttpTransport, url: Url) -> Resul
     {
         return Err(Error::Protocol("JWKS has no keys"));
     }
+    crate::trace::step(format_args!(
+        "jwks: keys={}",
+        jwks.get("keys")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    ));
     Ok(jwks)
 }
 
@@ -342,12 +361,31 @@ pub(crate) fn verify_id_token(
     let signature = URL_SAFE_NO_PAD
         .decode(signature)
         .map_err(|_| Error::TokenValidation("invalid signature encoding"))?;
+    crate::trace::step(format_args!(
+        "id_token: header_len={} payload_len={} signature_bytes={}",
+        header.len(),
+        claims.len(),
+        signature.len()
+    ));
+    crate::trace::step(format_args!(
+        "id_token: alg={algorithm} kid={}",
+        crate::trace::short(kid)
+    ));
     let mut eligible = false;
     for key in keys.iter().filter(|key| key_eligible(key, kid, algorithm)) {
         eligible = true;
         match crypto::verify(algorithm, key, &message, &signature) {
             Ok(()) => {
+                crate::trace::step(format_args!(
+                    "id_token: signature ok, {algorithm} {} via wolfCrypt, kid={}",
+                    key_description(key, algorithm),
+                    crate::trace::short(kid)
+                ));
                 validate_claims(&claims_json, issuer, client_id, nonce)?;
+                crate::trace::step("id_token: claims ok: iss aud nonce exp sub");
+                if crate::trace::enabled() {
+                    trace_verified_claims(&claims_json);
+                }
                 return Ok(claims_json);
             }
             Err(Error::Crypto) => return Err(Error::Crypto),
@@ -367,6 +405,44 @@ pub(crate) fn verify_id_token(
         );
     }
     Err(Error::TokenValidation("invalid signature"))
+}
+
+fn trace_verified_claims(claims_json: &Value) {
+    let text = |name: &str| claims_json.get(name).and_then(Value::as_str).unwrap_or("-");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let expires_in = claims_json
+        .get("exp")
+        .and_then(Value::as_u64)
+        .map_or(0, |exp| exp.saturating_sub(now));
+    let audience = claims_json.get("aud").map_or_else(
+        || "-".to_owned(),
+        |aud| aud.as_str().map_or_else(|| aud.to_string(), str::to_owned),
+    );
+    crate::trace::step(format_args!(
+        "id_token: iss={} aud={audience} preferred_username={}",
+        text("iss"),
+        text("preferred_username")
+    ));
+    crate::trace::step(format_args!(
+        "id_token: sub={} expires_in={expires_in}",
+        text("sub")
+    ));
+}
+
+fn key_description(key: &Value, algorithm: &str) -> String {
+    match algorithm {
+        "RS256" => {
+            let bits = key
+                .get("n")
+                .and_then(Value::as_str)
+                .and_then(|n| URL_SAFE_NO_PAD.decode(n).ok())
+                .map_or(0, |n| n.len() * 8);
+            format!("RSA-{bits} PKCS#1 v1.5 SHA-256")
+        }
+        _ => "ECDSA P-256 SHA-256".to_owned(),
+    }
 }
 
 fn validate_claims(

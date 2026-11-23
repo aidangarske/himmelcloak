@@ -27,7 +27,7 @@ password=correct-horse-battery-staple
 
 usage() {
     cat <<'EOF'
-make demo [METHOD=...] [QR=0]
+make demo [METHOD=...] [QR=0] [VERBOSE=1]
 
   password      alice signs in with a password (default)
   totp          bob signs in with a password and a code from a phone authenticator app
@@ -98,10 +98,15 @@ echo
 echo "Run make demo again with a wrong password or code to see the rejection."
 echo
 
+login_args=(test-login)
+if [[ -n "${VERBOSE:-}" && "${VERBOSE}" != 0 ]]; then
+    login_args+=(--verbose)
+fi
+
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 result=0
 "${compose[@]}" run --rm --no-deps -w /work/tests/keycloak/.generated/demo tester \
-    cargo run --quiet --locked --manifest-path /work/Cargo.toml -p himmelcloak-cli -- test-login || result=$?
+    cargo run --quiet --locked --manifest-path /work/Cargo.toml -p himmelcloak-cli -- "${login_args[@]}" || result=$?
 
 echo
 echo "Exit status: $result"

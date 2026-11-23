@@ -99,6 +99,30 @@ pub(crate) fn extract(page: &Page) -> Result<(PageKind, Form)> {
             .map(|(_, value)| value.to_string())
             .collect();
     }
+    if crate::trace::enabled() {
+        let names = |hidden: bool| {
+            scan.controls
+                .iter()
+                .filter(|control| (control.kind == "hidden") == hidden)
+                .map(|control| control.name.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        crate::trace::step(format_args!(
+            "html5gum: parsed {} bytes, form method=post action={}",
+            page.body.len(),
+            action.path()
+        ));
+        crate::trace::step(format_args!("form: inputs={}", names(false)));
+        if !names(true).is_empty() {
+            crate::trace::step(format_args!("form: hidden={}", names(true)));
+        }
+        let keys: Vec<String> = action
+            .query_pairs()
+            .map(|(name, _)| name.into_owned())
+            .collect();
+        crate::trace::step(format_args!("form: action params={}", keys.join(",")));
+    }
     Ok((
         kind,
         Form {

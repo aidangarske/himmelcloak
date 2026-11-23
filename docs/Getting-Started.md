@@ -34,7 +34,8 @@ cargo run --locked -p himmelcloak-cli -- clear-state
 ```
 
 `config check` validates TOML syntax only. `clear-state` remains a placeholder.
-`test-login` runs an interactive native password and one-time-code login. `sync-users` reads the
+`test-login` runs an interactive native password and one-time-code login; `--verbose` traces each
+step to stderr (see [Build and test](#build-and-test) for what it prints). `sync-users` reads the
 configured group as described below.
 
 ### Test login
@@ -219,6 +220,15 @@ wrong password to see the rejection.
 in `bob` with a code from a phone authenticator app; `totp-devices` has `carol`
 choose between two code devices first; `list` prints the methods. See
 [Phone one-time-code demo](#phone-one-time-code-demo) for the phone setup.
+`VERBOSE=1` runs `test-login --verbose`, which prints each step to stderr: every
+HTTPS request with its wolfSSL TLS version and cipher, the Keycloak page found,
+the form field names posted, the code exchange, and the ID-token checks, then the
+ID token's issuer, audience, username, and subject once its signature and claims
+pass. It never prints passwords, codes, cookie values, raw tokens, or query
+strings, and escapes control characters in text from the server. On a failure it also
+prints the reason: libcurl and wolfSSL errors such as a certificate that fails
+verification, Keycloak's rejection message, or the token check that failed.
+`HIMMELCLOAK_TRACE=1 himmelcloak-cli test-login` turns the same trace on without the flag.
 
 `KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:nightly make test` selects the nightly
 server. Keycloak gets a random free host port, so an existing service on 8443

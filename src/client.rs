@@ -237,6 +237,7 @@ impl PublicClientApplication {
 
     pub(crate) fn authorization_url(&self, start: &Start, flow: &mut AuthFlow) -> Result<url::Url> {
         flow.ensure_active()?;
+        crate::trace::step("login start: pkce, state, nonce from wolfCrypt RNG");
         token::authorization_url(
             &self.metadata.authorization_endpoint,
             token::AuthorizationParameters {
@@ -281,7 +282,10 @@ impl PublicClientApplication {
         // An ended login follows no redirect at all, not only the callback.
         flow.ensure_active()?;
         let callback = match driver::callback(redirect, &self.config.redirect_uri, flow) {
-            Ok(Some(callback)) => callback,
+            Ok(Some(callback)) => {
+                crate::trace::step("callback: redirect to redirect_uri, state ok, code received");
+                callback
+            }
             Ok(None) => return Ok(None),
             Err(error) => {
                 flow.fail();
@@ -294,6 +298,7 @@ impl PublicClientApplication {
 
     /// Authorization-code grant for a public client (RFC 6749 section 4.1.3, RFC 7636 section 4.5).
     async fn redeem_code(&self, code: &str, verifier: &str, nonce: &str) -> Result<Tokens> {
+        crate::trace::step("token exchange: grant_type=authorization_code with pkce verifier");
         let mut tokens = standard::acquire(
             self.transport.as_ref(),
             self.metadata.token_endpoint.clone(),

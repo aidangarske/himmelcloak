@@ -417,6 +417,12 @@ fn send_blocking(
     let mut header_bytes = 0usize;
     let mut sent_bytes = 0usize;
     let oversized = std::cell::Cell::new(false);
+    let tracing = crate::trace::enabled();
+    let mut tls_line = String::new();
+    let started = Instant::now();
+    if tracing {
+        easy.verbose(true).map_err(curl_error)?;
+    }
     let transfer_result = {
         let mut transfer = easy.transfer();
         transfer
@@ -455,13 +461,57 @@ fn send_blocking(
                 true
             })
             .map_err(curl_error)?;
+        if tracing {
+            // Only libcurl's own status text is read; headers and data never reach the trace.
+            transfer
+                .debug_function(|kind, data| {
+                    if matches!(kind, curl::easy::InfoType::Text) {
+                        if let Ok(text) = std::str::from_utf8(data) {
+                            if let Some(rest) = text.trim().strip_prefix("SSL connection using ") {
+                                tls_line = rest.to_owned();
+                            }
+                        }
+                    }
+                })
+                .map_err(curl_error)?;
+        }
         transfer.perform()
     };
     if oversized.get() {
         return Err(Error::Protocol("HTTP response too large"));
     }
+    if tracing {
+        if let Err(error) = &transfer_result {
+            crate::trace::step(format_args!(
+                "{} {} failed: time={}ms error={error}",
+                match request.method {
+                    Method::Get => "GET",
+                    Method::Post => "POST",
+                },
+                crate::trace::path_only(&request.url),
+                started.elapsed().as_millis()
+            ));
+        }
+    }
     transfer_result.map_err(|error| transfer_error(error, sent_bytes))?;
     response.status = easy.response_code().map_err(curl_error)?;
+    if tracing {
+        let method = match request.method {
+            Method::Get => "GET",
+            Method::Post => "POST",
+        };
+        let tls = if tls_line.is_empty() {
+            String::new()
+        } else {
+            format!(" tls={}", tls_line.replace(" / ", "/"))
+        };
+        crate::trace::step(format_args!(
+            "{method} {} status={}{tls} time={}ms",
+            crate::trace::path_only(&request.url),
+            response.status,
+            started.elapsed().as_millis()
+        ));
+    }
     for cookie in easy.cookies().map_err(curl_error)?.iter() {
         let cookie =
             std::str::from_utf8(cookie).map_err(|_| Error::Protocol("invalid cookie encoding"))?;

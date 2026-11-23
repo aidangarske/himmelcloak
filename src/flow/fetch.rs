@@ -297,6 +297,11 @@ impl Drop for Scrubbed {
     }
 }
 
+/// The name field of a libcurl Netscape-format cookie line.
+fn cookie_name(line: &str) -> String {
+    line.split('\t').nth(5).unwrap_or_default().to_owned()
+}
+
 /// GET a page, sending only the cookies `url`'s origin set in this jar.
 pub(crate) async fn get(
     transport: &dyn HttpTransport,
@@ -345,9 +350,25 @@ async fn send(
         return Err(Error::Protocol("page URL must use HTTPS"));
     }
     request.cookies = jar.lines_for(&request.url);
+    let sent: Vec<String> = request
+        .cookies
+        .iter()
+        .map(|line| cookie_name(line))
+        .collect();
     let requested = Scrubbed(request.url.clone());
     let url = &requested.0;
     let mut response = transport.send(request).await?;
+    if crate::trace::enabled() {
+        let set: Vec<String> = response
+            .cookies
+            .iter()
+            .map(|line| cookie_name(line))
+            .filter(|name| !name.is_empty() && !sent.contains(name))
+            .collect();
+        if !set.is_empty() {
+            crate::trace::step(format_args!("cookies: set={}", set.join(",")));
+        }
+    }
     // Keep cookies from redirects too: Keycloak sets its session cookies on the 302 after login.
     jar.replace(url, &response.cookies);
     if let Some(kind) = RedirectKind::from_status(response.status) {

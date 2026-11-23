@@ -141,15 +141,33 @@ fn read_available(master: &mut File, output: &mut Vec<u8>) {
 /// Run `test-login` in a pseudo-terminal, answer its username and password prompts, and return
 /// how it exited and everything it printed.
 fn test_login(dir: &WorkDir, username: &str, password: &str) -> (ExitStatus, String) {
-    test_login_answering(dir, &[("Username: ", username), ("Password: ", password)])
+    run_login(
+        dir,
+        &[("Username: ", username), ("Password: ", password)],
+        false,
+    )
+}
+
+/// Like `run_login`, with `--verbose` when the suite itself runs verbose, as CI does.
+fn test_login_answering(dir: &WorkDir, answers: &[(&str, &str)]) -> (ExitStatus, String) {
+    run_login(
+        dir,
+        answers,
+        std::env::var_os("HIMMELCLOAK_TEST_VERBOSE").is_some(),
+    )
 }
 
 /// Run `test-login` in a pseudo-terminal, answer each prompt in order, and return how it exited
 /// and everything it printed.
-fn test_login_answering(dir: &WorkDir, answers: &[(&str, &str)]) -> (ExitStatus, String) {
+fn run_login(dir: &WorkDir, answers: &[(&str, &str)], verbose: bool) -> (ExitStatus, String) {
     let (mut master, slave) = terminal_pair();
-    let child = Command::new(env!("CARGO_BIN_EXE_himmelcloak-cli"))
-        .arg("test-login")
+    let mut command = Command::new(env!("CARGO_BIN_EXE_himmelcloak-cli"));
+    command.arg("test-login");
+    if verbose {
+        command.arg("--verbose");
+    }
+    let child = command
+        .env_remove("HIMMELCLOAK_TRACE")
         .current_dir(&dir.0)
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
@@ -192,6 +210,9 @@ fn assert_no_secrets(output: &str, password: &str) {
         "the password appeared in CLI output"
     );
     assert!(!output.contains("eyJ"), "a token appeared in CLI output");
+    for query in ["session_code=", "?code=", "&code=", "?state=", "&state="] {
+        assert!(!output.contains(query), "a query value appeared: {query}");
+    }
 }
 
 #[test]
@@ -207,6 +228,10 @@ fn cli_test_login_completes_a_password_login_end_to_end() {
         "{output}"
     );
     assert_no_secrets(&output, PASSWORD);
+    assert!(
+        !output.contains("himmelcloak: "),
+        "trace is off by default: {output}"
+    );
     trace("the CLI printed login succeeded and exited 0, without the password or tokens");
 
     trace("run test-login with a wrong password");
@@ -265,4 +290,48 @@ fn cli_test_login_prompts_for_a_hidden_code_and_lists_code_devices() {
     );
     assert_no_secrets(&output, PASSWORD);
     trace("the CLI listed carol's devices, hid the code, and reported the failed login");
+}
+
+#[test]
+#[ignore = "requires a live Keycloak server and test CA"]
+fn cli_test_login_verbose_traces_each_step_without_secrets() {
+    let dir = work_dir("verbose");
+    let answers = |password| [("Username: ", "alice"), ("Password: ", password)];
+
+    trace("run test-login --verbose and check each traced step");
+    let (status, output) = run_login(&dir, &answers(PASSWORD), true);
+    assert!(status.success(), "login must succeed: {output}");
+    for step in [
+        "himmelcloak: discovery: issuer=",
+        "tls=TLSv1.3",
+        "himmelcloak: pkce: code_challenge=",
+        "himmelcloak: page: login.ftl (username, password)",
+        "himmelcloak: form: post fields=username,password",
+        "himmelcloak: callback: redirect to redirect_uri, state ok, code received",
+        "himmelcloak: id_token: signature ok",
+        "himmelcloak: id_token: claims ok",
+        "preferred_username=alice",
+        "himmelcloak-cli: login succeeded",
+    ] {
+        assert!(output.contains(step), "missing {step:?}: {output}");
+    }
+    assert_no_secrets(&output, PASSWORD);
+
+    trace("a wrong password shows Keycloak's rejection in the trace");
+    let (status, output) = run_login(&dir, &answers(WRONG_PASSWORD), true);
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "a wrong password must fail: {output}"
+    );
+    assert!(
+        output.contains("himmelcloak: page: keycloak rejected answer:"),
+        "{output}"
+    );
+    assert!(
+        !output.contains("id_token:"),
+        "no token on a failed login: {output}"
+    );
+    assert_no_secrets(&output, WRONG_PASSWORD);
+    trace("the trace named each step and never printed the password, a token, or a query value");
 }

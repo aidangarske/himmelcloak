@@ -6,7 +6,7 @@ use std::process::ExitCode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
     ConfigCheck,
-    TestLogin,
+    TestLogin { verbose: bool },
     SyncUsers,
     ClearState,
 }
@@ -14,10 +14,15 @@ enum Command {
 fn parse_command(arguments: &[String]) -> Result<Command, &'static str> {
     match arguments {
         [config, check] if config == "config" && check == "check" => Ok(Command::ConfigCheck),
-        [command] if command == "test-login" => Ok(Command::TestLogin),
+        [command] if command == "test-login" => Ok(Command::TestLogin { verbose: false }),
+        [command, flag] if command == "test-login" && flag == "--verbose" => {
+            Ok(Command::TestLogin { verbose: true })
+        }
         [command] if command == "sync-users" => Ok(Command::SyncUsers),
         [command] if command == "clear-state" => Ok(Command::ClearState),
-        _ => Err("usage: himmelcloak-cli <config check|test-login|sync-users|clear-state>"),
+        _ => Err(
+            "usage: himmelcloak-cli <config check|test-login [--verbose]|sync-users|clear-state>",
+        ),
     }
 }
 
@@ -46,9 +51,12 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Ok(Command::TestLogin) => {
+        Ok(Command::TestLogin { verbose }) => {
             #[cfg(unix)]
             {
+                himmelcloak::trace::set_verbose(
+                    verbose || env::var_os("HIMMELCLOAK_TRACE").is_some_and(|value| value != "0"),
+                );
                 match himmelcloak_cli::run_test_login(Path::new("himmelcloak.toml")) {
                     Ok(()) => {
                         println!("himmelcloak-cli: login succeeded");
@@ -112,7 +120,11 @@ mod tests {
         );
         assert_eq!(
             parse_command(&arguments(&["test-login"])),
-            Ok(Command::TestLogin)
+            Ok(Command::TestLogin { verbose: false })
+        );
+        assert_eq!(
+            parse_command(&arguments(&["test-login", "--verbose"])),
+            Ok(Command::TestLogin { verbose: true })
         );
         assert_eq!(
             parse_command(&arguments(&["sync-users"])),
