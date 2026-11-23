@@ -20,7 +20,7 @@
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-compose=(docker compose -f "$script_dir/docker-compose.yml")
+compose=("${CONTAINER:-docker}" compose -f "$script_dir/docker-compose.yml")
 demo_dir="$script_dir/.generated/demo"
 method=${METHOD:-password}
 password=correct-horse-battery-staple

@@ -3,7 +3,7 @@
 The integration suite authenticates against an unmodified Keycloak container. Compose imports
 `tests/keycloak/realm-export.json`, which has public OIDC clients and disposable `alice` and `passkey-test`
 users. A generated test CA signs the HTTPS certificate for the `keycloak.test`
-Docker network alias.
+Compose network alias.
 
 The realm also contains disposable one-time-code fixture users. `bob` has a
 30-second, 6-digit SHA-1 TOTP credential. `carol` has an 8-digit SHA-256 TOTP
@@ -21,6 +21,8 @@ Run `make test-live` for the moving `latest` Keycloak image or set `KEYCLOAK_IMA
 Each local run recreates the Keycloak container so realm import uses the current fixture.
 Run `make clean` afterward to remove the test server and its state. `make test`
 runs the unit tests, lint, and this suite, then removes the containers itself.
+Add `CONTAINER=podman` to any of these targets to run them with Podman instead
+of Docker; [Getting Started](Getting-Started.md) lists what Podman needs.
 
 Run `tests/keycloak/run.sh --verbose` (or `make test-live-verbose`) to see
 Himmelcloak's client steps and Keycloak's `LOGIN`/`LOGIN_ERROR` and

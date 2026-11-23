@@ -13,10 +13,16 @@ endif
 export TESTER_IMAGE := himmelcloak-tester:$(DISTRO)
 endif
 
-COMPOSE = docker compose -f tests/keycloak/docker-compose.yml
+CONTAINER ?= docker
+ifeq ($(filter $(CONTAINER),docker podman),)
+$(error CONTAINER must be docker or podman)
+endif
+export CONTAINER
+
+COMPOSE = $(CONTAINER) compose -f tests/keycloak/docker-compose.yml
 IN_DOCKER = $(COMPOSE) run --rm --no-deps --entrypoint /usr/bin/env tester
 
-##@ Everything runs in Docker; the host needs only Docker, Compose v2, and openssl.
+##@ Everything runs in containers; the host needs Docker or Podman, Compose v2, and openssl.
 
 build: image ## Build every crate (the default)
 	$(IN_DOCKER) cargo build --locked --workspace
@@ -43,6 +49,8 @@ help: ## Show every target
 	@echo
 	@echo "DISTRO values: $(DISTROS)"
 	@echo "Example: make test DISTRO=opensuse-leap-16.0"
+	@echo "CONTAINER values: docker (default) podman"
+	@echo "Example: make test CONTAINER=podman"
 
 ##@ Individual steps
 

@@ -21,28 +21,29 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 distro=${DISTRO:-}
+engine=${CONTAINER:-docker}
 
 if [[ -z "$distro" ]]; then
-    exec docker compose -f "$repo/tests/keycloak/docker-compose.yml" build tester
+    exec "$engine" compose -f "$repo/tests/keycloak/docker-compose.yml" build tester
 fi
 
 extra_repo=
 case "$distro" in
-    debian-12) file=Dockerfile.apt base=debian:12 ;;
-    ubuntu-24.04) file=Dockerfile.apt base=ubuntu:24.04 ;;
-    opensuse-leap-16.0) file=Dockerfile.zypper base=opensuse/leap:16.0 ;;
-    opensuse-tumbleweed) file=Dockerfile.zypper base=opensuse/tumbleweed ;;
+    debian-12) file=Dockerfile.apt base=docker.io/library/debian:12 ;;
+    ubuntu-24.04) file=Dockerfile.apt base=docker.io/library/ubuntu:24.04 ;;
+    opensuse-leap-16.0) file=Dockerfile.zypper base=docker.io/opensuse/leap:16.0 ;;
+    opensuse-tumbleweed) file=Dockerfile.zypper base=docker.io/opensuse/tumbleweed ;;
     sle-bci-16.0)
         file=Dockerfile.zypper base=registry.suse.com/bci/bci-base:16.0
         extra_repo=https://download.opensuse.org/distribution/leap/16.0/repo/oss/
         ;;
-    rockylinux-9) file=Dockerfile.dnf base=rockylinux:9 ;;
-    fedora) file=Dockerfile.dnf base=fedora:latest ;;
+    rockylinux-9) file=Dockerfile.dnf base=docker.io/library/rockylinux:9 ;;
+    fedora) file=Dockerfile.dnf base=docker.io/library/fedora:latest ;;
     *) echo "unknown DISTRO: $distro" >&2; exit 2 ;;
 esac
 
 # The distro Dockerfiles install the x86-64 rustup, so build for amd64 everywhere.
-exec docker build --platform linux/amd64 \
+exec "$engine" build --platform linux/amd64 \
     -f "$repo/.github/docker/himmelcloak-ci/$file" \
     --build-arg "BASE=$base" --build-arg "EXTRA_REPO=$extra_repo" \
     -t "himmelcloak-tester:$distro" "$repo"

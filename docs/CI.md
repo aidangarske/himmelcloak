@@ -33,6 +33,11 @@ signals. Their matrix names are moving values; they are not added as required
 checks by this slice. Existing branch rules should be reviewed before replacing
 them with the minimum set above.
 
+`Keycloak latest with Podman` runs `make unit lint` and `make test-live-verbose`
+with `CONTAINER=podman`, using the runner's Podman and its Docker Compose plugin
+as the compose provider. It keeps the Podman path working and is an optional
+check, not a merge requirement.
+
 ## Supply-chain policy
 
 `deny.toml` is the license allow-list. The pinned cargo-deny action checks all

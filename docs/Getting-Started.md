@@ -181,8 +181,8 @@ not pruned automatically; reaching the limit fails without replacing the file.
 
 ## Build and test
 
-Everything runs in Docker. The host needs Docker with the Compose v2 plugin,
-`make`, and the OpenSSL command-line tool:
+Everything runs in containers. The host needs Docker with the Compose v2 plugin
+(or Podman, below), `make`, and the OpenSSL command-line tool:
 
 ```sh
 make         # build every crate in the tester image
@@ -191,10 +191,22 @@ make demo    # interactive test-login against Keycloak, then Keycloak's event lo
 make clean   # stop Keycloak and remove the test containers and volumes
 ```
 
-On SELinux hosts using Podman through Docker compatibility, the Compose bind
-mounts use `:z` to give the checkout and Keycloak fixtures a shared container
-label. This lets the tester read `/work/Cargo.toml` and keeps the overlapping
-Keycloak mounts accessible when both containers run.
+To use Podman instead of Docker, pass `CONTAINER=podman` to any target:
+
+```sh
+make test CONTAINER=podman
+make demo CONTAINER=podman METHOD=totp
+```
+
+The scripts then call `podman` and `podman compose`. Podman needs a compose
+provider (the `docker-compose` binary or plugin is what CI uses) and its API
+socket running, for example with `systemctl --user enable --now podman.socket`.
+Hosts that run Podman through the `podman-docker` shim can keep the default.
+
+On SELinux hosts, the Compose bind mounts use `:z` to give the checkout and
+Keycloak fixtures a shared container label. This lets the tester read
+`/work/Cargo.toml` and keeps the overlapping Keycloak mounts accessible when
+both containers run.
 
 `make help` lists the individual steps:
 
@@ -209,10 +221,10 @@ Keycloak mounts accessible when both containers run.
 
 The tester image (`tests/build/Dockerfile`) contains the pinned Rust toolchain,
 the pinned wolfSSL stable release, and the `curl` crate linked to a wolfSSL-backed
-libcurl. Docker caches it after the first build. Cargo output goes to a Docker
-volume, so the host `target/` directory is untouched. The live suite and the demo
+libcurl. Docker or Podman caches it after the first build. Cargo output goes to a
+named volume, so the host `target/` directory is untouched. The live suite and the demo
 generate a local test CA, start stock Keycloak with the seeded realm, and log in
-over real HTTPS through the `keycloak.test` Docker network alias.
+over real HTTPS through the `keycloak.test` Compose network alias.
 
 `make demo` first prints the distribution and the `curl --version` line, which
 names the wolfSSL backend. It then logs in through the `himmelcloak-browser-only`
@@ -301,7 +313,7 @@ With `DISTRO` set, the tester is built locally from the matching
 `.github/docker/himmelcloak-ci/` Dockerfile, the same files the cross-distro CI
 uses, and tagged `himmelcloak-tester:<name>`. Each image compiles the branch's
 pinned wolfSSL and libcurl, so the first build of a distribution takes several
-minutes and later runs reuse Docker's cache. These images are x86-64 only, so
+minutes and later runs reuse the container engine's cache. These images are x86-64 only, so
 Apple silicon runs them under emulation. Each distribution keeps its own Cargo
 build directory, so switching does not mix build output.
 
