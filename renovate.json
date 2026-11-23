@@ -55,7 +55,7 @@
         "rust-version: '(?<currentValue>\\d+\\.\\d+\\.\\d+)'",
         "channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
         "rust-version = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
-        "FROM rust:(?<currentValue>\\d+\\.\\d+\\.\\d+)-bookworm",
+        "FROM docker.io/library/rust:(?<currentValue>\\d+\\.\\d+\\.\\d+)-bookworm",
         "--toolchain (?<currentValue>\\d+\\.\\d+\\.\\d+)",
         "--default-toolchain (?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],

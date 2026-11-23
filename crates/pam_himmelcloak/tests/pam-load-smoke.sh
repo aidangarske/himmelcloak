@@ -5,21 +5,22 @@ set -euo pipefail
 
 task_repo_root="$(cd -- "${1:-$PWD}" && pwd -P)"
 task_image="himmelcloak-pam-smoke:ci"
+engine="${CONTAINER:-docker}"
 
-if ! command -v docker >/dev/null 2>&1; then
-    printf 'Required development tool is missing: docker\n' >&2
+if ! command -v "$engine" >/dev/null 2>&1; then
+    printf 'Required development tool is missing: %s\n' "$engine" >&2
     exit 1
 fi
 
 printf 'Building the PAM smoke-test image...\n'
-docker build \
+"$engine" build \
     --file "$task_repo_root/tests/build/Dockerfile" \
     --tag "$task_image" \
     "$task_repo_root"
 
 printf 'Building and testing the PAM module inside one disposable container...\n'
-docker run --rm \
-    --mount "type=bind,src=$task_repo_root,dst=/work,readonly" \
+"$engine" run --rm \
+    --volume "$task_repo_root:/work:ro,z" \
     --env CARGO_TARGET_DIR=/tmp/himmelcloak-target \
     --workdir /work \
     "$task_image" bash -c '

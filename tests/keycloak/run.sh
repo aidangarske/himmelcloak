@@ -31,7 +31,7 @@ if [[ $# -ne 0 ]]; then
 fi
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-compose=(docker compose -f "$script_dir/docker-compose.yml")
+compose=("${CONTAINER:-docker}" compose -f "$script_dir/docker-compose.yml")
 
 "$script_dir/bootstrap-cert.sh"
 "${compose[@]}" up -d --pull always --force-recreate keycloak

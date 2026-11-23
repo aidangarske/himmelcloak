@@ -13,10 +13,19 @@ endif
 export TESTER_IMAGE := himmelcloak-tester:$(DISTRO)
 endif
 
-COMPOSE = docker compose -f tests/keycloak/docker-compose.yml
+CONTAINER ?= docker
+override CONTAINER := $(strip $(CONTAINER))
+ifneq ($(CONTAINER),docker)
+ifneq ($(CONTAINER),podman)
+$(error CONTAINER must be docker or podman)
+endif
+endif
+export CONTAINER
+
+COMPOSE = $(CONTAINER) compose -f tests/keycloak/docker-compose.yml
 IN_DOCKER = $(COMPOSE) run --rm --no-deps --entrypoint /usr/bin/env tester
 
-##@ Everything runs in Docker; the host needs only Docker, Compose v2, and openssl.
+##@ Everything runs in containers; the host needs Docker or Podman, Compose v2, and openssl.
 
 build: image ## Build every crate (the default)
 	$(IN_DOCKER) cargo build --locked --workspace
@@ -43,6 +52,8 @@ help: ## Show every target
 	@echo
 	@echo "DISTRO values: $(DISTROS)"
 	@echo "Example: make test DISTRO=opensuse-leap-16.0"
+	@echo "CONTAINER values: docker (default) podman"
+	@echo "Example: make test CONTAINER=podman"
 
 ##@ Individual steps
 
@@ -63,7 +74,7 @@ test-live-verbose: ## Live suite with each step and Keycloak's event log
 	tests/keycloak/run.sh --verbose
 
 shell: image ## Shell in the build container with the repo at /work
-	$(COMPOSE) run --rm --no-deps --entrypoint bash tester
+	$(IN_DOCKER) bash -i
 
 oracle-up: ## Start Keycloak in the background
 	tests/keycloak/bootstrap-cert.sh

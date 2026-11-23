@@ -16,6 +16,39 @@ jobs:
   resolve:
     uses: ./.github/workflows/_resolve-keycloak.yml
 
+  podman:
+    name: Keycloak latest with Podman
+    # Ubuntu 26.04's pasta AppArmor profile blocks Podman's teardown signal.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CONTAINER: podman
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Start the Podman API socket for the compose provider
+        run: |
+          podman --version
+          systemctl --user start podman.socket || { podman system service --time=0 & }
+          provider=$(command -v docker-compose || echo /usr/libexec/docker/cli-plugins/docker-compose)
+          echo "PODMAN_COMPOSE_PROVIDER=$provider" >> "$GITHUB_ENV"
+          PODMAN_COMPOSE_PROVIDER=$provider podman compose version
+      - name: Unit tests and lint
+        run: make unit lint
+      - name: Load the PAM module
+        run: make pam-smoke
+      - name: Build a distro tester image
+        run: make image DISTRO=debian-12
+      - name: Run live login suite
+        run: make test-live-verbose
+      - name: Keycloak logs on failure
+        if: failure()
+        run: podman compose -f tests/keycloak/docker-compose.yml logs --no-color keycloak
+      - name: Stop Keycloak
+        if: always()
+        run: make clean
+
   login:
     name: ${{ matrix.name }}
     needs: resolve

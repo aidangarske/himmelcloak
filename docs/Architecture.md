@@ -205,7 +205,7 @@ For a local run after building the native dependencies:
 
 The native wrapper locates the pinned wolfSSL and libcurl build. Transport tests
 need permission to open loopback sockets; the live HTTPS suite also requires
-Docker. See [Testing](Testing.md).
+Docker or Podman. See [Testing](Testing.md).
 
 ## Planned authentication methods
 

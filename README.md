@@ -26,7 +26,8 @@ planned native login flow.
 
 ## Quick start
 
-You need Docker with Compose v2, `make`, and the `openssl` command-line tool.
+You need Docker with Compose v2 (or Podman, with `CONTAINER=podman`),
+`make`, and the `openssl` command-line tool.
 Nothing else is installed on your machine; Linux and macOS both work.
 
 ```sh
