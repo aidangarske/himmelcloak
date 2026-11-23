@@ -364,26 +364,30 @@ pub(crate) fn verify_id_token(
     let signature = URL_SAFE_NO_PAD
         .decode(signature)
         .map_err(|_| Error::TokenValidation("invalid signature encoding"))?;
-    crate::trace::step(format_args!(
-        "id_token: header_len={} payload_len={} signature_bytes={}",
-        header.len(),
-        claims.len(),
-        signature.len()
-    ));
-    crate::trace::step(format_args!(
-        "id_token: alg={algorithm} kid={}",
-        crate::trace::short(kid)
-    ));
+    if crate::trace::enabled() {
+        crate::trace::step(format_args!(
+            "id_token: header_len={} payload_len={} signature_bytes={}",
+            header.len(),
+            claims.len(),
+            signature.len()
+        ));
+        crate::trace::step(format_args!(
+            "id_token: alg={algorithm} kid={}",
+            crate::trace::short(kid)
+        ));
+    }
     let mut eligible = false;
     for key in keys.iter().filter(|key| key_eligible(key, kid, algorithm)) {
         eligible = true;
         match crypto::verify(algorithm, key, &message, &signature) {
             Ok(()) => {
-                crate::trace::step(format_args!(
-                    "id_token: signature ok, {algorithm} {} via wolfCrypt, kid={}",
-                    key_description(key, algorithm),
-                    crate::trace::short(kid)
-                ));
+                if crate::trace::enabled() {
+                    crate::trace::step(format_args!(
+                        "id_token: signature ok, {algorithm} {} via wolfCrypt, kid={}",
+                        key_description(key, algorithm),
+                        crate::trace::short(kid)
+                    ));
+                }
                 validate_claims(&claims_json, issuer, client_id, nonce)?;
                 crate::trace::step(if nonce.is_some() {
                     "id_token: claims ok: iss aud nonce exp sub"

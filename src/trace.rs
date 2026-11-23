@@ -19,9 +19,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! Opt-in step trace for demos and diagnostics. Prints protocol steps to stderr and never
-//! prints passwords, codes, cookie values, raw tokens, or query strings.
+//! prints passwords, codes, cookie values, raw tokens, or query strings. Names, paths, and
+//! verified claims the configured Keycloak serves are printed as served, escaped.
 
 use std::fmt::Display;
+#[cfg(not(test))]
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -29,7 +31,8 @@ use url::Url;
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
-/// Turn the step trace on or off for this process.
+/// Turn the step trace on or off for the whole process: every login running in it is traced,
+/// so enable it only where one login is being diagnosed, as `test-login --verbose` does.
 pub fn set_verbose(on: bool) {
     VERBOSE.store(on, Ordering::Relaxed);
 }
@@ -43,9 +46,19 @@ pub(crate) fn enabled() -> bool {
 pub(crate) fn step(message: impl Display) {
     if enabled() {
         let line = escape_controls(&message.to_string());
+        #[cfg(not(test))]
         let _ = writeln!(std::io::stderr().lock(), "himmelcloak: {line}");
+        #[cfg(test)]
+        CAPTURED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!("himmelcloak: {line}"));
     }
 }
+
+/// Unit tests read the trace here instead of from stderr.
+#[cfg(test)]
+pub(crate) static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// Control characters and the invisible bidi and zero-width marks that can reorder or hide
 /// text on a terminal.

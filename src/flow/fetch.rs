@@ -411,7 +411,18 @@ mod tests {
 
     use url::Url;
 
-    use super::{get, post_form, scrub_url, CookieJar, Fetched, Page, Redirect, RedirectKind};
+    use super::{
+        cookie_name, get, post_form, scrub_url, CookieJar, Fetched, Page, Redirect, RedirectKind,
+    };
+
+    #[test]
+    fn cookie_name_keeps_only_the_name_of_a_netscape_line() {
+        let line = "#HttpOnly_keycloak.test\tFALSE\t/realms/r/\tTRUE\t0\tAUTH_SESSION_ID\tsynthetic-session-9f3a";
+        let name = cookie_name(line);
+        assert_eq!(name, "AUTH_SESSION_ID");
+        assert!(!name.contains("synthetic-session-9f3a"));
+        assert_eq!(cookie_name("not a cookie line"), "");
+    }
     use crate::error::{Error, Result};
     use crate::flow::{AuthFlow, DEFAULT_LOGIN_TIMEOUT};
     use crate::transport::{CurlTransport, HttpTransport, Request, Response};

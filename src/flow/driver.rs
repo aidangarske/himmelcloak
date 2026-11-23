@@ -202,10 +202,12 @@ async fn resolve(
         }
         followed += 1;
         posted = false;
-        crate::trace::step(format_args!(
-            "redirect: same origin, following to {}",
-            crate::trace::path_only(&redirect.location)
-        ));
+        if crate::trace::enabled() {
+            crate::trace::step(format_args!(
+                "redirect: same origin, following to {}",
+                crate::trace::path_only(&redirect.location)
+            ));
+        }
         fetched = fetch::get(app.transport(), &mut flow.jar, redirect.location.clone()).await?;
     }
 }

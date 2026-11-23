@@ -40,7 +40,8 @@ the token's issuer, audience, username, and subject once it is verified. On a
 failure it adds the libcurl or wolfSSL error, that Keycloak rejected the answer,
 or the token check that failed. It never prints passwords, codes, cookie
 values, raw tokens, or query strings, and escapes control characters in
-text from the server.
+text from the server. Names, paths, and verified claims are printed as the
+configured Keycloak serves them, so the trace trusts that server.
 
 This command supports username, password, and one-time-code (TOTP and
 HOTP) challenges. The code is not echoed. When Keycloak offers several

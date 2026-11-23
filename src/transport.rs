@@ -477,11 +477,13 @@ fn send_blocking(
         }
         transfer.perform()
     };
-    if oversized.get() {
-        return Err(Error::Protocol("HTTP response too large"));
-    }
     if tracing {
-        if let Err(error) = &transfer_result {
+        let failure = if oversized.get() {
+            Some("HTTP response too large".to_owned())
+        } else {
+            transfer_result.as_ref().err().map(ToString::to_string)
+        };
+        if let Some(error) = failure {
             crate::trace::step(format_args!(
                 "{} {} failed: time={}ms error={error}",
                 match request.method {
@@ -492,6 +494,9 @@ fn send_blocking(
                 started.elapsed().as_millis()
             ));
         }
+    }
+    if oversized.get() {
+        return Err(Error::Protocol("HTTP response too large"));
     }
     transfer_result.map_err(|error| transfer_error(error, sent_bytes))?;
     response.status = easy.response_code().map_err(curl_error)?;
@@ -879,6 +884,61 @@ mod tests {
             curl_sys::CURLE_RECV_ERROR,
         ] {
             assert!(!unreachable(code, 0), "{code}");
+        }
+    }
+
+    #[test]
+    fn trace_of_failed_requests_redacts_query_body_and_cookies() {
+        let timeout = std::time::Duration::from_secs(5);
+        crate::trace::set_verbose(true);
+
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let refused_at = closed.local_addr().unwrap();
+        drop(closed);
+        let url = Url::parse(&format!(
+            "http://{refused_at}/realms/r/login-actions/authenticate?session_code=sentinel-query#sentinel-fragment"
+        ))
+        .unwrap();
+        let mut request = Request::form(url, &[("password", "sentinel-body")]).unwrap();
+        request.cookies = vec![format!(
+            "{}\tFALSE\t/\tFALSE\t0\tAUTH_SESSION_ID\tsentinel-cookie",
+            refused_at.ip()
+        )];
+        assert!(send_blocking(request, None, timeout).is_err());
+
+        let (url, server) = serve(128, MAX_RESPONSE + 1);
+        let oversized_at = url.join("big?state=sentinel-state").unwrap();
+        let oversized = send_blocking(Request::get(oversized_at.clone()), None, timeout);
+        server.join().unwrap();
+        assert!(matches!(
+            oversized,
+            Err(Error::Protocol("HTTP response too large"))
+        ));
+        crate::trace::set_verbose(false);
+
+        let captured = crate::trace::CAPTURED.lock().unwrap().clone();
+        let refused_line = format!(
+            "himmelcloak: POST http://{refused_at}/realms/r/login-actions/authenticate failed: time="
+        );
+        let refused = captured
+            .iter()
+            .find(|line| line.starts_with(&refused_line))
+            .unwrap_or_else(|| panic!("no refused-request line in {captured:?}"));
+        assert!(refused.contains(" error="), "{refused}");
+        let oversized_line = format!("himmelcloak: GET {}big failed: time=", url.as_str());
+        let oversized = captured
+            .iter()
+            .find(|line| line.starts_with(&oversized_line))
+            .unwrap_or_else(|| panic!("no oversized-response line in {captured:?}"));
+        assert!(
+            oversized.ends_with("error=HTTP response too large"),
+            "{oversized}"
+        );
+        for line in &captured {
+            assert!(
+                !line.contains("sentinel"),
+                "a secret reached the trace: {line}"
+            );
         }
     }
 

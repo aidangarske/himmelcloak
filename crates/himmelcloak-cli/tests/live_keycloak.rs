@@ -160,14 +160,27 @@ fn test_login_answering(dir: &WorkDir, answers: &[(&str, &str)]) -> (ExitStatus,
 /// Run `test-login` in a pseudo-terminal, answer each prompt in order, and return how it exited
 /// and everything it printed.
 fn run_login(dir: &WorkDir, answers: &[(&str, &str)], verbose: bool) -> (ExitStatus, String) {
+    run_login_with(dir, answers, verbose, None)
+}
+
+/// `run_login` with `HIMMELCLOAK_TRACE` set to `trace_env`, or unset when it is `None`.
+fn run_login_with(
+    dir: &WorkDir,
+    answers: &[(&str, &str)],
+    verbose: bool,
+    trace_env: Option<&str>,
+) -> (ExitStatus, String) {
     let (mut master, slave) = terminal_pair();
     let mut command = Command::new(env!("CARGO_BIN_EXE_himmelcloak-cli"));
     command.arg("test-login");
     if verbose {
         command.arg("--verbose");
     }
+    match trace_env {
+        Some(value) => command.env("HIMMELCLOAK_TRACE", value),
+        None => command.env_remove("HIMMELCLOAK_TRACE"),
+    };
     let child = command
-        .env_remove("HIMMELCLOAK_TRACE")
         .current_dir(&dir.0)
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
@@ -203,19 +216,31 @@ fn run_login(dir: &WorkDir, answers: &[(&str, &str)], verbose: bool) -> (ExitSta
     (status, String::from_utf8_lossy(&output).into_owned())
 }
 
-/// A JWT's header and payload are both base64url JSON, so it reads `eyJ...` `.` `eyJ...`. A bare
-/// `eyJ` can occur by chance in a random base64url value such as the traced PKCE challenge.
-fn has_jwt(output: &str) -> bool {
-    output.match_indices("eyJ").any(|(start, _)| {
-        let rest = &output[start..];
-        let header = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-            .unwrap_or(rest.len());
-        rest[header..].starts_with(".eyJ")
-    })
+/// Every traced HTTPS request line, one per request the CLI sent.
+fn request_lines(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with("himmelcloak: GET ") || line.starts_with("himmelcloak: POST ")
+        })
+        .collect()
 }
 
-/// Neither the password nor anything shaped like a token (a JWT starts `eyJ`) is printed.
+/// Anything shaped like a token: three dotted base64url parts (a JWT, whatever its JSON starts
+/// with), or one base64url run of 64 or more characters (an opaque token). The longest traced
+/// value, the PKCE challenge, is 43 characters.
+fn has_jwt(output: &str) -> bool {
+    output
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+        .any(|word| {
+            let parts: Vec<&str> = word.split('.').collect();
+            (parts.len() == 3 && parts.iter().all(|part| part.len() >= 16))
+                || parts.iter().any(|part| part.len() >= 64)
+        })
+}
+
+/// Neither the password nor anything shaped like a token is printed.
 fn assert_no_secrets(output: &str, password: &str) {
     assert!(
         !output.contains(password),
@@ -329,6 +354,28 @@ fn cli_test_login_verbose_traces_each_step_without_secrets() {
         assert!(output.contains(step), "missing {step:?}: {output}");
     }
     assert_no_secrets(&output, PASSWORD);
+    let requests = request_lines(&output);
+    for path in [
+        "/.well-known/openid-configuration",
+        "/protocol/openid-connect/certs",
+        "/protocol/openid-connect/auth",
+        "/login-actions/authenticate",
+        "/protocol/openid-connect/token",
+    ] {
+        assert!(
+            requests.iter().any(|line| line.contains(path)),
+            "no traced request to {path}: {output}"
+        );
+    }
+    for line in &requests {
+        for part in [" status=", " tls=TLSv1.3/", " time="] {
+            assert!(line.contains(part), "request line lacks {part:?}: {line}");
+        }
+        assert!(
+            !line.contains('?') && !line.contains('#'),
+            "unredacted URL: {line}"
+        );
+    }
     let posted = output
         .lines()
         .find(|line| line.contains("himmelcloak: form: post fields="))
@@ -354,17 +401,46 @@ fn cli_test_login_verbose_traces_each_step_without_secrets() {
         "{output}"
     );
     assert!(
+        !request_lines(&output)
+            .iter()
+            .any(|line| line.contains("/openid-connect/token")),
+        "a failed login must not reach the token endpoint: {output}"
+    );
+    assert!(
         !output.contains("id_token:"),
         "no token on a failed login: {output}"
     );
     assert_no_secrets(&output, WRONG_PASSWORD);
+
+    trace("HIMMELCLOAK_TRACE=1 turns the trace on without the flag, and =0 leaves it off");
+    let (status, output) = run_login_with(&dir, &answers(PASSWORD), false, Some("1"));
+    assert!(status.success(), "login must succeed: {output}");
+    assert!(
+        output.contains("himmelcloak: id_token: claims ok"),
+        "{output}"
+    );
+    assert_no_secrets(&output, PASSWORD);
+    let (status, output) = run_login_with(&dir, &answers(PASSWORD), false, Some("0"));
+    assert!(status.success(), "login must succeed: {output}");
+    assert!(
+        !output.contains("himmelcloak: "),
+        "trace must stay off: {output}"
+    );
     trace("the trace named each step and never printed the password, a token, or a query value");
 }
 
 #[test]
-fn has_jwt_needs_a_header_and_a_payload() {
+fn has_jwt_finds_jwts_and_opaque_tokens_but_not_traced_values() {
     assert!(has_jwt(
-        "token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJib2IifQ.c2ln end"
+        "token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJib2IifQ.c2lnbmF0dXJlLWJ5dGVz end"
     ));
-    assert!(!has_jwt("code_challenge=abc-eyJ_xyz9 kid=eyJab..."));
+    assert!(has_jwt(
+        "t=ICAgeyJhbGciOiJSUzI1NiJ9.ICAgeyJzdWIiOiJib2IifQ.c2lnbmF0dXJlLWJ5dGVz"
+    ));
+    assert!(has_jwt(&format!("refresh {}", "a1B2-c3_D".repeat(8))));
+    assert!(!has_jwt(
+        "code_challenge=BASE64URL(SHA-256(verifier))=YHm6iUBObFTQHwMmgCzsCSEOUhsHt59UVmQpSXtUyV0 \
+         kid=kTmXpwZl... GET https://keycloak.test:8443/realms/himmelcloak-test/protocol \
+         sub=fd349193-bd8d-469f-9b72-e00f222193c3 tls=TLSv1.3/TLS13-AES256-GCM-SHA384"
+    ));
 }

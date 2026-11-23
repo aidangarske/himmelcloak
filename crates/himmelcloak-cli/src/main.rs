@@ -70,6 +70,7 @@ fn main() -> ExitCode {
             }
             #[cfg(not(unix))]
             {
+                let _ = verbose;
                 eprintln!("himmelcloak-cli: test-login requires Unix");
                 ExitCode::FAILURE
             }
