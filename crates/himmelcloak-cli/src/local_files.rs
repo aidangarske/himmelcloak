@@ -137,14 +137,29 @@ impl State {
     }
 }
 
+// A child forked by a parallel test holds the lock fd until its exec closes it.
+#[cfg(test)]
+fn lock_when_free(directory: &Path) -> io::Result<State> {
+    let mut tries = 0;
+    loop {
+        match State::lock(directory) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock && tries < 200 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
 #[cfg(test)]
 fn save(directory: &Path, contents: &[u8]) -> io::Result<()> {
-    State::lock(directory)?.save(contents)
+    lock_when_free(directory)?.save(contents)
 }
 
 #[cfg(test)]
 fn replace(directory: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
-    let state = State::lock(directory)?;
+    let state = lock_when_free(directory)?;
     replace_in(&state.directory, write)
 }
 
@@ -271,7 +286,7 @@ mod tests {
         symlink("missing", dir.0.join("users.json")).unwrap();
         assert!(state.load().is_err());
         drop(state);
-        assert!(State::lock(&dir.0).is_ok());
+        assert!(lock_when_free(&dir.0).is_ok());
     }
 
     #[test]
