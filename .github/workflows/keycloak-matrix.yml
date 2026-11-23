@@ -18,7 +18,8 @@ jobs:
 
   podman:
     name: Keycloak latest with Podman
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04's pasta AppArmor profile blocks Podman's teardown signal.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CONTAINER: podman
