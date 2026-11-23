@@ -159,10 +159,7 @@ async fn post(
         .collect();
     if crate::trace::enabled() {
         let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
-        crate::trace::step(format_args!(
-            "form: post fields={}",
-            names.join(",")
-        ));
+        crate::trace::step(format_args!("form: post fields={}", names.join(",")));
     }
     pending
         .form
