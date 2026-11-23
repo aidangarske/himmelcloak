@@ -157,10 +157,6 @@ async fn post(
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
-    if crate::trace::enabled() {
-        let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
-        crate::trace::step(format_args!("form: post fields={}", names.join(",")));
-    }
     pending
         .form
         .submit(app.transport(), jar, &fields, deadline)
@@ -222,7 +218,8 @@ fn present(factors: &dyn Factors, flow: &mut AuthFlow, page: &Page) -> Result<Au
     // answers. The login ends there, as a failed login, so the caller starts a new one.
     if let Some(reason) = kind.rejection() {
         let reason = reason.to_owned();
-        crate::trace::step(format_args!("page: keycloak rejected answer: {reason}"));
+        // The message is server HTML that could echo the posted password or code back.
+        crate::trace::step("page: keycloak rejected the answer (message not traced)");
         flow.fail();
         return Ok(AuthStep::Failed { reason });
     }

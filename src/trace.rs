@@ -47,10 +47,24 @@ pub(crate) fn step(message: impl Display) {
     }
 }
 
+/// Control characters and the invisible bidi and zero-width marks that can reorder or hide
+/// text on a terminal.
+pub(crate) fn unsafe_for_terminal(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061c}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+        )
+}
+
 fn escape_controls(text: &str) -> String {
     text.chars()
         .map(|c| {
-            if c.is_control() {
+            if unsafe_for_terminal(c) {
                 c.escape_default().to_string()
             } else {
                 c.to_string()
@@ -66,13 +80,9 @@ pub(crate) fn short(value: &str) -> String {
 }
 
 /// `url` without its query or fragment, which can carry state, nonce, or the code.
+/// Built from the parts it shows, so no copy of the query or credentials is ever allocated.
 pub(crate) fn path_only(url: &Url) -> String {
-    let mut shown = url.clone();
-    shown.set_query(None);
-    shown.set_fragment(None);
-    let _ = shown.set_username("");
-    let _ = shown.set_password(None);
-    shown.to_string()
+    format!("{}{}", url.origin().ascii_serialization(), url.path())
 }
 
 #[cfg(test)]
@@ -85,6 +95,10 @@ mod tests {
         assert_eq!(
             escape_controls("bob\u{1b}[2J\r\nhimmelcloak: login succeeded\u{7}"),
             "bob\\u{1b}[2J\\r\\nhimmelcloak: login succeeded\\u{7}"
+        );
+        assert_eq!(
+            escape_controls("bob\u{202e}nimda\u{200b}\u{2066}x\u{feff}"),
+            "bob\\u{202e}nimda\\u{200b}\\u{2066}x\\u{feff}"
         );
         assert_eq!(escape_controls("user=bob aud=x"), "user=bob aud=x");
     }

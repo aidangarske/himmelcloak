@@ -476,17 +476,7 @@ fn toggle_credential(onclick: &str, index: usize) -> Option<String> {
 fn clean_label(text: &str) -> String {
     let kept: String = text
         .chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(
-                    c,
-                    '\u{061c}'
-                        | '\u{200b}'..='\u{200f}'
-                        | '\u{202a}'..='\u{202e}'
-                        | '\u{2066}'..='\u{2069}'
-                        | '\u{feff}'
-                )
-        })
+        .filter(|c| !crate::trace::unsafe_for_terminal(*c))
         .collect();
     kept.split_whitespace().collect::<Vec<_>>().join(" ")
 }

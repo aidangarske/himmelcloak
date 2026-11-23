@@ -177,8 +177,11 @@ pub(crate) fn authorization_url(
     crate::trace::step(format_args!(
         "pkce: code_challenge=BASE64URL(SHA-256(verifier))={challenge}"
     ));
-    crate::trace::step(format_args!("state={}", crate::trace::short(state)));
-    crate::trace::step(format_args!("nonce={}", crate::trace::short(nonce)));
+    crate::trace::step(format_args!(
+        "state and nonce: generated, values hidden, state_len={} nonce_len={}",
+        state.len(),
+        nonce.len()
+    ));
     let mut url = endpoint.clone();
     let mut query = url.query_pairs_mut();
     query
@@ -382,7 +385,11 @@ pub(crate) fn verify_id_token(
                     crate::trace::short(kid)
                 ));
                 validate_claims(&claims_json, issuer, client_id, nonce)?;
-                crate::trace::step("id_token: claims ok: iss aud nonce exp sub");
+                crate::trace::step(if nonce.is_some() {
+                    "id_token: claims ok: iss aud nonce exp sub"
+                } else {
+                    "id_token: claims ok: iss aud exp sub"
+                });
                 if crate::trace::enabled() {
                     trace_verified_claims(&claims_json);
                 }

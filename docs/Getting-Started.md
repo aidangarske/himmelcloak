@@ -227,7 +227,8 @@ ID token's issuer, audience, username, and subject once its signature and claims
 pass. It never prints passwords, codes, cookie values, raw tokens, or query
 strings, and escapes control characters in text from the server. On a failure it also
 prints the reason: libcurl and wolfSSL errors such as a certificate that fails
-verification, Keycloak's rejection message, or the token check that failed.
+verification, that Keycloak rejected the answer (its message is not traced, since server text
+could echo the input), or the token check that failed.
 `HIMMELCLOAK_TRACE=1 himmelcloak-cli test-login` turns the same trace on without the flag.
 
 `KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:nightly make test` selects the nightly

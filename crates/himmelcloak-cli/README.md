@@ -37,7 +37,7 @@ line to stderr for each step: every HTTPS request with its wolfSSL TLS
 version and cipher, the PKCE challenge, the Keycloak page found, the form
 field names posted, the code exchange, and the ID-token checks, followed by
 the token's issuer, audience, username, and subject once it is verified. On a
-failure it adds the libcurl or wolfSSL error, Keycloak's rejection message,
+failure it adds the libcurl or wolfSSL error, that Keycloak rejected the answer,
 or the token check that failed. It never prints passwords, codes, cookie
 values, raw tokens, or query strings, and escapes control characters in
 text from the server.

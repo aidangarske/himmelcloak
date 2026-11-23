@@ -203,13 +203,25 @@ fn run_login(dir: &WorkDir, answers: &[(&str, &str)], verbose: bool) -> (ExitSta
     (status, String::from_utf8_lossy(&output).into_owned())
 }
 
+/// A JWT's header and payload are both base64url JSON, so it reads `eyJ...` `.` `eyJ...`. A bare
+/// `eyJ` can occur by chance in a random base64url value such as the traced PKCE challenge.
+fn has_jwt(output: &str) -> bool {
+    output.match_indices("eyJ").any(|(start, _)| {
+        let rest = &output[start..];
+        let header = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .unwrap_or(rest.len());
+        rest[header..].starts_with(".eyJ")
+    })
+}
+
 /// Neither the password nor anything shaped like a token (a JWT starts `eyJ`) is printed.
 fn assert_no_secrets(output: &str, password: &str) {
     assert!(
         !output.contains(password),
         "the password appeared in CLI output"
     );
-    assert!(!output.contains("eyJ"), "a token appeared in CLI output");
+    assert!(!has_jwt(output), "a token appeared in CLI output");
     for query in ["session_code=", "?code=", "&code=", "?state=", "&state="] {
         assert!(!output.contains(query), "a query value appeared: {query}");
     }
@@ -306,7 +318,8 @@ fn cli_test_login_verbose_traces_each_step_without_secrets() {
         "tls=TLSv1.3",
         "himmelcloak: pkce: code_challenge=",
         "himmelcloak: page: login.ftl (username, password)",
-        "himmelcloak: form: post fields=username,password",
+        "himmelcloak: form: post fields=",
+        "himmelcloak: state and nonce: generated, values hidden",
         "himmelcloak: callback: redirect to redirect_uri, state ok, code received",
         "himmelcloak: id_token: signature ok",
         "himmelcloak: id_token: claims ok",
@@ -316,8 +329,20 @@ fn cli_test_login_verbose_traces_each_step_without_secrets() {
         assert!(output.contains(step), "missing {step:?}: {output}");
     }
     assert_no_secrets(&output, PASSWORD);
+    let posted = output
+        .lines()
+        .find(|line| line.contains("himmelcloak: form: post fields="))
+        .unwrap_or_default();
+    assert!(
+        posted.contains("username") && posted.contains("password"),
+        "{posted}"
+    );
+    assert!(
+        !output.contains("state=") && !output.contains("nonce="),
+        "state or nonce appeared: {output}"
+    );
 
-    trace("a wrong password shows Keycloak's rejection in the trace");
+    trace("a wrong password shows the rejection in the trace, without Keycloak's message");
     let (status, output) = run_login(&dir, &answers(WRONG_PASSWORD), true);
     assert_eq!(
         status.code(),
@@ -325,7 +350,7 @@ fn cli_test_login_verbose_traces_each_step_without_secrets() {
         "a wrong password must fail: {output}"
     );
     assert!(
-        output.contains("himmelcloak: page: keycloak rejected answer:"),
+        output.contains("himmelcloak: page: keycloak rejected the answer (message not traced)"),
         "{output}"
     );
     assert!(
@@ -334,4 +359,12 @@ fn cli_test_login_verbose_traces_each_step_without_secrets() {
     );
     assert_no_secrets(&output, WRONG_PASSWORD);
     trace("the trace named each step and never printed the password, a token, or a query value");
+}
+
+#[test]
+fn has_jwt_needs_a_header_and_a_payload() {
+    assert!(has_jwt(
+        "token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJib2IifQ.c2ln end"
+    ));
+    assert!(!has_jwt("code_challenge=abc-eyJ_xyz9 kid=eyJab..."));
 }

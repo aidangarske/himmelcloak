@@ -28,7 +28,7 @@ use core::fmt;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use url::{Host, Origin, Url};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{Error, Result};
 use crate::transport::{HttpTransport, Request};
@@ -350,20 +350,22 @@ async fn send(
         return Err(Error::Protocol("page URL must use HTTPS"));
     }
     request.cookies = jar.lines_for(&request.url);
-    let sent: Vec<String> = request
-        .cookies
-        .iter()
-        .map(|line| cookie_name(line))
-        .collect();
+    let sent = Zeroizing::new(if crate::trace::enabled() {
+        request.cookies.clone()
+    } else {
+        Vec::new()
+    });
     let requested = Scrubbed(request.url.clone());
     let url = &requested.0;
     let mut response = transport.send(request).await?;
     if crate::trace::enabled() {
+        // The store lists every cookie, so a new or rotated one is any line not sent as is.
         let set: Vec<String> = response
             .cookies
             .iter()
+            .filter(|line| !sent.contains(line))
             .map(|line| cookie_name(line))
-            .filter(|name| !name.is_empty() && !sent.contains(name))
+            .filter(|name| !name.is_empty())
             .collect();
         if !set.is_empty() {
             crate::trace::step(format_args!("cookies: set={}", set.join(",")));

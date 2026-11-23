@@ -219,6 +219,10 @@ impl Form {
                 (name.as_str(), answer.unwrap_or(value.as_str()))
             })
             .collect();
+        if crate::trace::enabled() {
+            let names: Vec<&str> = values.iter().map(|(name, _)| *name).collect();
+            crate::trace::step(format_args!("form: post fields={}", names.join(",")));
+        }
         match fetch::post_form_before(transport, jar, self.action.clone(), &values, deadline).await
         {
             // The form never reached Keycloak, so sending it once more cannot count a second
