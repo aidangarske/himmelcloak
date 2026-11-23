@@ -65,6 +65,8 @@ fn trace(message: &str) {
 }
 
 fn config_for_client(client_id: &str) -> Config {
+    // CI runs the live suite with the client trace on, so every step it prints is exercised.
+    crate::trace::set_verbose(std::env::var_os("HIMMELCLOAK_TEST_VERBOSE").is_some());
     let server = std::env::var("KEYCLOAK_URL").expect("KEYCLOAK_URL must be set for live tests");
     let ca = std::env::var("KEYCLOAK_CA").expect("KEYCLOAK_CA must be set for live tests");
     let mut config = Config::new(&server, "himmelcloak-test", client_id).unwrap();

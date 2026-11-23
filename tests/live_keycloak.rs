@@ -38,6 +38,7 @@ fn config() -> Config {
 }
 
 fn config_for(client: &str) -> Config {
+    himmelcloak::trace::set_verbose(std::env::var_os("HIMMELCLOAK_TEST_VERBOSE").is_some());
     let server = std::env::var("KEYCLOAK_URL").expect("KEYCLOAK_URL must be set for live tests");
     let ca = std::env::var("KEYCLOAK_CA").expect("KEYCLOAK_CA must be set for live tests");
     let mut config = Config::new(&server, "himmelcloak-test", client).unwrap();

@@ -60,6 +60,9 @@ pub(crate) async fn begin(
 ) -> Result<AuthStep> {
     let mut step = Step { flow, done: false };
     let next = first_page(app, factors, start, step.flow).await;
+    if let Err(error) = &next {
+        crate::trace::step(format_args!("login step failed: error={error}"));
+    }
     step.done = next.is_ok();
     next
 }
@@ -74,6 +77,9 @@ pub(crate) async fn advance(
 ) -> Result<AuthStep> {
     let mut step = Step { flow, done: false };
     let next = answer_page(app, factors, step.flow, answer).await;
+    if let Err(error) = &next {
+        crate::trace::step(format_args!("login step failed: error={error}"));
+    }
     step.done = next.is_ok();
     next
 }
@@ -196,6 +202,12 @@ async fn resolve(
         }
         followed += 1;
         posted = false;
+        if crate::trace::enabled() {
+            crate::trace::step(format_args!(
+                "redirect: same origin, following to {}",
+                crate::trace::path_only(&redirect.location)
+            ));
+        }
         fetched = fetch::get(app.transport(), &mut flow.jar, redirect.location.clone()).await?;
     }
 }
@@ -203,10 +215,13 @@ async fn resolve(
 /// Hand the page to its factor and return the page's first challenge.
 fn present(factors: &dyn Factors, flow: &mut AuthFlow, page: &Page) -> Result<AuthStep> {
     let (kind, form) = form::extract(page)?;
+    crate::trace::step(format_args!("page: {}", kind.describe()));
     // Keycloak sent the page back with a field error, such as a wrong password: it refused the
     // answers. The login ends there, as a failed login, so the caller starts a new one.
     if let Some(reason) = kind.rejection() {
         let reason = reason.to_owned();
+        // The message is server HTML that could echo the posted password or code back.
+        crate::trace::step("page: keycloak rejected the answer (message not traced)");
         flow.fail();
         return Ok(AuthStep::Failed { reason });
     }

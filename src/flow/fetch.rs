@@ -28,7 +28,7 @@ use core::fmt;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use url::{Host, Origin, Url};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{Error, Result};
 use crate::transport::{HttpTransport, Request};
@@ -297,6 +297,11 @@ impl Drop for Scrubbed {
     }
 }
 
+/// The name field of a libcurl Netscape-format cookie line.
+fn cookie_name(line: &str) -> String {
+    line.split('\t').nth(5).unwrap_or_default().to_owned()
+}
+
 /// GET a page, sending only the cookies `url`'s origin set in this jar.
 pub(crate) async fn get(
     transport: &dyn HttpTransport,
@@ -345,9 +350,27 @@ async fn send(
         return Err(Error::Protocol("page URL must use HTTPS"));
     }
     request.cookies = jar.lines_for(&request.url);
+    let sent = Zeroizing::new(if crate::trace::enabled() {
+        request.cookies.clone()
+    } else {
+        Vec::new()
+    });
     let requested = Scrubbed(request.url.clone());
     let url = &requested.0;
     let mut response = transport.send(request).await?;
+    if crate::trace::enabled() {
+        // The store lists every cookie, so a new or rotated one is any line not sent as is.
+        let set: Vec<String> = response
+            .cookies
+            .iter()
+            .filter(|line| !sent.contains(line))
+            .map(|line| cookie_name(line))
+            .filter(|name| !name.is_empty())
+            .collect();
+        if !set.is_empty() {
+            crate::trace::step(format_args!("cookies: set={}", set.join(",")));
+        }
+    }
     // Keep cookies from redirects too: Keycloak sets its session cookies on the 302 after login.
     jar.replace(url, &response.cookies);
     if let Some(kind) = RedirectKind::from_status(response.status) {
@@ -388,7 +411,18 @@ mod tests {
 
     use url::Url;
 
-    use super::{get, post_form, scrub_url, CookieJar, Fetched, Page, Redirect, RedirectKind};
+    use super::{
+        cookie_name, get, post_form, scrub_url, CookieJar, Fetched, Page, Redirect, RedirectKind,
+    };
+
+    #[test]
+    fn cookie_name_keeps_only_the_name_of_a_netscape_line() {
+        let line = "#HttpOnly_keycloak.test\tFALSE\t/realms/r/\tTRUE\t0\tAUTH_SESSION_ID\tsynthetic-session-9f3a";
+        let name = cookie_name(line);
+        assert_eq!(name, "AUTH_SESSION_ID");
+        assert!(!name.contains("synthetic-session-9f3a"));
+        assert_eq!(cookie_name("not a cookie line"), "");
+    }
     use crate::error::{Error, Result};
     use crate::flow::{AuthFlow, DEFAULT_LOGIN_TIMEOUT};
     use crate::transport::{CurlTransport, HttpTransport, Request, Response};

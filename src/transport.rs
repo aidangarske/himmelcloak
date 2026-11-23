@@ -417,6 +417,12 @@ fn send_blocking(
     let mut header_bytes = 0usize;
     let mut sent_bytes = 0usize;
     let oversized = std::cell::Cell::new(false);
+    let tracing = crate::trace::enabled();
+    let mut tls_line = String::new();
+    let started = Instant::now();
+    if tracing {
+        easy.verbose(true).map_err(curl_error)?;
+    }
     let transfer_result = {
         let mut transfer = easy.transfer();
         transfer
@@ -455,13 +461,62 @@ fn send_blocking(
                 true
             })
             .map_err(curl_error)?;
+        if tracing {
+            // Only libcurl's own status text is read; headers and data never reach the trace.
+            transfer
+                .debug_function(|kind, data| {
+                    if matches!(kind, curl::easy::InfoType::Text) {
+                        if let Ok(text) = std::str::from_utf8(data) {
+                            if let Some(rest) = text.trim().strip_prefix("SSL connection using ") {
+                                tls_line = rest.to_owned();
+                            }
+                        }
+                    }
+                })
+                .map_err(curl_error)?;
+        }
         transfer.perform()
     };
+    if tracing {
+        let failure = if oversized.get() {
+            Some("HTTP response too large".to_owned())
+        } else {
+            transfer_result.as_ref().err().map(ToString::to_string)
+        };
+        if let Some(error) = failure {
+            crate::trace::step(format_args!(
+                "{} {} failed: time={}ms error={error}",
+                match request.method {
+                    Method::Get => "GET",
+                    Method::Post => "POST",
+                },
+                crate::trace::path_only(&request.url),
+                started.elapsed().as_millis()
+            ));
+        }
+    }
     if oversized.get() {
         return Err(Error::Protocol("HTTP response too large"));
     }
     transfer_result.map_err(|error| transfer_error(error, sent_bytes))?;
     response.status = easy.response_code().map_err(curl_error)?;
+    if tracing {
+        let method = match request.method {
+            Method::Get => "GET",
+            Method::Post => "POST",
+        };
+        let tls = if tls_line.is_empty() {
+            String::new()
+        } else {
+            format!(" tls={}", tls_line.replace(" / ", "/"))
+        };
+        crate::trace::step(format_args!(
+            "{method} {} status={}{tls} time={}ms",
+            crate::trace::path_only(&request.url),
+            response.status,
+            started.elapsed().as_millis()
+        ));
+    }
     for cookie in easy.cookies().map_err(curl_error)?.iter() {
         let cookie =
             std::str::from_utf8(cookie).map_err(|_| Error::Protocol("invalid cookie encoding"))?;
@@ -829,6 +884,61 @@ mod tests {
             curl_sys::CURLE_RECV_ERROR,
         ] {
             assert!(!unreachable(code, 0), "{code}");
+        }
+    }
+
+    #[test]
+    fn trace_of_failed_requests_redacts_query_body_and_cookies() {
+        let timeout = std::time::Duration::from_secs(5);
+        crate::trace::set_verbose(true);
+
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let refused_at = closed.local_addr().unwrap();
+        drop(closed);
+        let url = Url::parse(&format!(
+            "http://{refused_at}/realms/r/login-actions/authenticate?session_code=sentinel-query#sentinel-fragment"
+        ))
+        .unwrap();
+        let mut request = Request::form(url, &[("password", "sentinel-body")]).unwrap();
+        request.cookies = vec![format!(
+            "{}\tFALSE\t/\tFALSE\t0\tAUTH_SESSION_ID\tsentinel-cookie",
+            refused_at.ip()
+        )];
+        assert!(send_blocking(request, None, timeout).is_err());
+
+        let (url, server) = serve(128, MAX_RESPONSE + 1);
+        let oversized_at = url.join("big?state=sentinel-state").unwrap();
+        let oversized = send_blocking(Request::get(oversized_at.clone()), None, timeout);
+        server.join().unwrap();
+        assert!(matches!(
+            oversized,
+            Err(Error::Protocol("HTTP response too large"))
+        ));
+        crate::trace::set_verbose(false);
+
+        let captured = crate::trace::CAPTURED.lock().unwrap().clone();
+        let refused_line = format!(
+            "himmelcloak: POST http://{refused_at}/realms/r/login-actions/authenticate failed: time="
+        );
+        let refused = captured
+            .iter()
+            .find(|line| line.starts_with(&refused_line))
+            .unwrap_or_else(|| panic!("no refused-request line in {captured:?}"));
+        assert!(refused.contains(" error="), "{refused}");
+        let oversized_line = format!("himmelcloak: GET {}big failed: time=", url.as_str());
+        let oversized = captured
+            .iter()
+            .find(|line| line.starts_with(&oversized_line))
+            .unwrap_or_else(|| panic!("no oversized-response line in {captured:?}"));
+        assert!(
+            oversized.ends_with("error=HTTP response too large"),
+            "{oversized}"
+        );
+        for line in &captured {
+            assert!(
+                !line.contains("sentinel"),
+                "a secret reached the trace: {line}"
+            );
         }
     }
 

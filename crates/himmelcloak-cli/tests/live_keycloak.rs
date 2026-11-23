@@ -141,15 +141,46 @@ fn read_available(master: &mut File, output: &mut Vec<u8>) {
 /// Run `test-login` in a pseudo-terminal, answer its username and password prompts, and return
 /// how it exited and everything it printed.
 fn test_login(dir: &WorkDir, username: &str, password: &str) -> (ExitStatus, String) {
-    test_login_answering(dir, &[("Username: ", username), ("Password: ", password)])
+    run_login(
+        dir,
+        &[("Username: ", username), ("Password: ", password)],
+        false,
+    )
+}
+
+/// Like `run_login`, with `--verbose` when the suite itself runs verbose, as CI does.
+fn test_login_answering(dir: &WorkDir, answers: &[(&str, &str)]) -> (ExitStatus, String) {
+    run_login(
+        dir,
+        answers,
+        std::env::var_os("HIMMELCLOAK_TEST_VERBOSE").is_some(),
+    )
 }
 
 /// Run `test-login` in a pseudo-terminal, answer each prompt in order, and return how it exited
 /// and everything it printed.
-fn test_login_answering(dir: &WorkDir, answers: &[(&str, &str)]) -> (ExitStatus, String) {
+fn run_login(dir: &WorkDir, answers: &[(&str, &str)], verbose: bool) -> (ExitStatus, String) {
+    run_login_with(dir, answers, verbose, None)
+}
+
+/// `run_login` with `HIMMELCLOAK_TRACE` set to `trace_env`, or unset when it is `None`.
+fn run_login_with(
+    dir: &WorkDir,
+    answers: &[(&str, &str)],
+    verbose: bool,
+    trace_env: Option<&str>,
+) -> (ExitStatus, String) {
     let (mut master, slave) = terminal_pair();
-    let child = Command::new(env!("CARGO_BIN_EXE_himmelcloak-cli"))
-        .arg("test-login")
+    let mut command = Command::new(env!("CARGO_BIN_EXE_himmelcloak-cli"));
+    command.arg("test-login");
+    if verbose {
+        command.arg("--verbose");
+    }
+    match trace_env {
+        Some(value) => command.env("HIMMELCLOAK_TRACE", value),
+        None => command.env_remove("HIMMELCLOAK_TRACE"),
+    };
+    let child = command
         .current_dir(&dir.0)
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
@@ -185,13 +216,40 @@ fn test_login_answering(dir: &WorkDir, answers: &[(&str, &str)]) -> (ExitStatus,
     (status, String::from_utf8_lossy(&output).into_owned())
 }
 
-/// Neither the password nor anything shaped like a token (a JWT starts `eyJ`) is printed.
+/// Every traced HTTPS request line, one per request the CLI sent.
+fn request_lines(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with("himmelcloak: GET ") || line.starts_with("himmelcloak: POST ")
+        })
+        .collect()
+}
+
+/// Anything shaped like a token: three dotted base64url parts (a JWT, whatever its JSON starts
+/// with), or one base64url run of 64 or more characters (an opaque token). The longest traced
+/// value, the PKCE challenge, is 43 characters.
+fn has_jwt(output: &str) -> bool {
+    output
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+        .any(|word| {
+            let parts: Vec<&str> = word.split('.').collect();
+            (parts.len() == 3 && parts.iter().all(|part| part.len() >= 16))
+                || parts.iter().any(|part| part.len() >= 64)
+        })
+}
+
+/// Neither the password nor anything shaped like a token is printed.
 fn assert_no_secrets(output: &str, password: &str) {
     assert!(
         !output.contains(password),
         "the password appeared in CLI output"
     );
-    assert!(!output.contains("eyJ"), "a token appeared in CLI output");
+    assert!(!has_jwt(output), "a token appeared in CLI output");
+    for query in ["session_code=", "?code=", "&code=", "?state=", "&state="] {
+        assert!(!output.contains(query), "a query value appeared: {query}");
+    }
 }
 
 #[test]
@@ -207,6 +265,10 @@ fn cli_test_login_completes_a_password_login_end_to_end() {
         "{output}"
     );
     assert_no_secrets(&output, PASSWORD);
+    assert!(
+        !output.contains("himmelcloak: "),
+        "trace is off by default: {output}"
+    );
     trace("the CLI printed login succeeded and exited 0, without the password or tokens");
 
     trace("run test-login with a wrong password");
@@ -265,4 +327,120 @@ fn cli_test_login_prompts_for_a_hidden_code_and_lists_code_devices() {
     );
     assert_no_secrets(&output, PASSWORD);
     trace("the CLI listed carol's devices, hid the code, and reported the failed login");
+}
+
+#[test]
+#[ignore = "requires a live Keycloak server and test CA"]
+fn cli_test_login_verbose_traces_each_step_without_secrets() {
+    let dir = work_dir("verbose");
+    let answers = |password| [("Username: ", "alice"), ("Password: ", password)];
+
+    trace("run test-login --verbose and check each traced step");
+    let (status, output) = run_login(&dir, &answers(PASSWORD), true);
+    assert!(status.success(), "login must succeed: {output}");
+    for step in [
+        "himmelcloak: discovery: issuer=",
+        "tls=TLSv1.3",
+        "himmelcloak: pkce: code_challenge=",
+        "himmelcloak: page: login.ftl (username, password)",
+        "himmelcloak: form: post fields=",
+        "himmelcloak: state and nonce: generated, values hidden",
+        "himmelcloak: callback: redirect to redirect_uri, state ok, code received",
+        "himmelcloak: id_token: signature ok",
+        "himmelcloak: id_token: claims ok",
+        "preferred_username=alice",
+        "himmelcloak-cli: login succeeded",
+    ] {
+        assert!(output.contains(step), "missing {step:?}: {output}");
+    }
+    assert_no_secrets(&output, PASSWORD);
+    let requests = request_lines(&output);
+    for path in [
+        "/.well-known/openid-configuration",
+        "/protocol/openid-connect/certs",
+        "/protocol/openid-connect/auth",
+        "/login-actions/authenticate",
+        "/protocol/openid-connect/token",
+    ] {
+        assert!(
+            requests.iter().any(|line| line.contains(path)),
+            "no traced request to {path}: {output}"
+        );
+    }
+    for line in &requests {
+        for part in [" status=", " tls=TLSv1.3/", " time="] {
+            assert!(line.contains(part), "request line lacks {part:?}: {line}");
+        }
+        assert!(
+            !line.contains('?') && !line.contains('#'),
+            "unredacted URL: {line}"
+        );
+    }
+    let posted = output
+        .lines()
+        .find(|line| line.contains("himmelcloak: form: post fields="))
+        .unwrap_or_default();
+    assert!(
+        posted.contains("username") && posted.contains("password"),
+        "{posted}"
+    );
+    assert!(
+        !output.contains("state=") && !output.contains("nonce="),
+        "state or nonce appeared: {output}"
+    );
+
+    trace("a wrong password shows the rejection in the trace, without Keycloak's message");
+    let (status, output) = run_login(&dir, &answers(WRONG_PASSWORD), true);
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "a wrong password must fail: {output}"
+    );
+    assert!(
+        output.contains("himmelcloak: page: keycloak rejected the answer (message not traced)"),
+        "{output}"
+    );
+    assert!(
+        !request_lines(&output)
+            .iter()
+            .any(|line| line.contains("/openid-connect/token")),
+        "a failed login must not reach the token endpoint: {output}"
+    );
+    assert!(
+        !output.contains("id_token:"),
+        "no token on a failed login: {output}"
+    );
+    assert_no_secrets(&output, WRONG_PASSWORD);
+
+    trace("HIMMELCLOAK_TRACE=1 turns the trace on without the flag, and =0 leaves it off");
+    let (status, output) = run_login_with(&dir, &answers(PASSWORD), false, Some("1"));
+    assert!(status.success(), "login must succeed: {output}");
+    assert!(
+        output.contains("himmelcloak: id_token: claims ok"),
+        "{output}"
+    );
+    assert_no_secrets(&output, PASSWORD);
+    let (status, output) = run_login_with(&dir, &answers(PASSWORD), false, Some("0"));
+    assert!(status.success(), "login must succeed: {output}");
+    assert!(
+        !output.contains("himmelcloak: "),
+        "trace must stay off: {output}"
+    );
+    trace("the trace named each step and never printed the password, a token, or a query value");
+}
+
+#[test]
+fn has_jwt_finds_jwts_and_opaque_tokens_but_not_traced_values() {
+    assert!(has_jwt(
+        "token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJib2IifQ.c2lnbmF0dXJlLWJ5dGVz end"
+    ));
+    assert!(has_jwt(
+        "t=ICAgeyJhbGciOiJSUzI1NiJ9.ICAgeyJzdWIiOiJib2IifQ.c2lnbmF0dXJlLWJ5dGVz"
+    ));
+    assert!(has_jwt(&format!("refresh {}", "a1B2-c3_D".repeat(8))));
+    assert!(!has_jwt(
+        "code_challenge=BASE64URL(SHA-256(verifier))=YHm6iUBObFTQHwMmgCzsCSEOUhsHt59UVmQpSXtUyV0 \
+         kid=kTmXpwZl... GET https://keycloak.test:8443/realms/himmelcloak-test/protocol \
+         sub=fd349193-bd8d-469f-9b72-e00f222193c3 tls=TLSv1.3/TLS13-AES256-GCM-SHA384"
+    ));
 }

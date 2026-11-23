@@ -62,6 +62,13 @@ pub(crate) async fn acquire(
     if require_id_token && id_token.is_none() {
         return Err(Error::Protocol("token response has no ID token"));
     }
+    crate::trace::step(format_args!(
+        "token response: token_type={token_type} expires_in={} access_token_len={} id_token_len={} refresh_token_len={}",
+        parsed.get("expires_in").and_then(Value::as_u64).unwrap_or(0),
+        access_token.len(),
+        id_token.map_or(0, str::len),
+        refresh_token.map_or(0, str::len)
+    ));
     Ok(Tokens {
         access_token: access_token.to_owned(),
         refresh_token: refresh_token.map(str::to_owned),

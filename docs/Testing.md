@@ -42,7 +42,15 @@ login as `Failed` with Keycloak's message.
 `crates/himmelcloak-cli/tests/live_keycloak.rs` runs the real `himmelcloak-cli test-login`
 binary in a pseudo-terminal on the same client: alice's username and password at its prompts
 print `login succeeded` and exit 0, a wrong password prints `login failed` and exits 1, and
-neither run prints the password or a token.
+neither run prints the password, a token, or a `himmelcloak:` trace line.
+`cli_test_login_verbose_traces_each_step_without_secrets` runs the same logins with `--verbose`:
+the trace must name discovery, TLS 1.3, the PKCE challenge, the password page, the posted field
+names, the callback, and the ID-token signature and claim checks, and a wrong password must show
+that Keycloak rejected the answer, without its message. Neither run may print the password, a
+token, or a query value.
+With `HIMMELCLOAK_TEST_VERBOSE=1`, which `make test-live-verbose` and the Keycloak matrix in CI
+set, the library's live scenarios and the CLI's one-time-code test also run with
+the client trace on, so every step it prints is exercised against each Keycloak release.
 The suite runs `cargo test --workspace --features webauthn-virtual --lib --test live_keycloak -- --ignored`,
 so it also runs every workspace crate's `live_keycloak` tests and the library's live scenarios in
 `src/flow/live.rs`. Those cover the pieces
