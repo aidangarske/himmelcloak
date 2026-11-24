@@ -16,10 +16,14 @@ RUN cargo build --locked --release -p pam_himmelcloak \
 
 # Same Debian release as the tester image, so the module's glibc matches.
 FROM docker.io/library/debian:12-slim
-RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+# The slim image has no CA certificates, so install them first (packages are
+# still signature-checked), then switch apt to HTTPS like the tester image.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates \
+    && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-       ca-certificates openssh-client openssh-server sshpass \
+       openssh-client openssh-server sshpass \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /pam_himmelcloak.so /tmp/pam_himmelcloak.so
