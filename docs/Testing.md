@@ -292,4 +292,6 @@ installs them and its build fails with the missing names if any library the
 module links against is absent. The recovery password (`local-recovery-test-only`) and the snapshot
 fixture exist only inside the image. Containers run on every pull request;
 nightly VMs are planned for console login and other cases containers cannot
-cover.
+cover. `tests/ci/test_linux_runner.py` checks the runner itself offline with a
+fake container engine: a failing check, an sshd that never starts, or a failed
+build still ends with the container removed and the original status returned.

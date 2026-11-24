@@ -41,7 +41,7 @@ make linux-test   # boot a disposable Linux system and check PAM, SSH, and the r
 make clean   # stop Keycloak and remove the test containers
 ```
 
-Add `DISTRO=<name>` to any target to run it on another Linux distribution:
+Add `DISTRO=<name>` to supported build and test targets to run them on another Linux distribution. `linux-test` and `linux-shell` always use Debian 12 and reject `DISTRO`:
 
 ```sh
 make test DISTRO=opensuse-leap-16.0

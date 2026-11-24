@@ -18,6 +18,7 @@ mode=${1:-test}
 tester_image=himmelcloak-tester:ci
 system_image=himmelcloak-linux:ci
 name="himmelcloak-linux-$$"
+boot_timeout=${LINUX_BOOT_TIMEOUT:-30}
 
 case "$mode" in
     test | shell) ;;
@@ -57,7 +58,8 @@ printf 'Building the disposable Linux test system...\n'
 
 printf 'Booting %s...\n' "$name"
 "$engine" run --detach --platform "$platform" --name "$name" "$system_image" >/dev/null
-for _ in $(seq 1 30); do
+# A Bash loop, not seq: stock macOS has no seq.
+for ((attempt = 1; attempt <= boot_timeout; attempt++)); do
     if "$engine" exec "$name" test -s /run/sshd.pid; then
         break
     fi
