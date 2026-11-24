@@ -247,7 +247,9 @@ Himmelcloak PAM module first in the sshd `auth` stack, and a separate local
 recovery account. It boots the container, runs the checks below inside it, then
 removes it and confirms it is gone. `make linux-shell` boots the same system and
 opens a shell in it for manual PAM and SSH testing; it is removed when you exit.
-Both work with `CONTAINER=podman`.
+Both work with `CONTAINER=podman`. The system is always Debian 12, so the module
+is always built with the default Debian 12 tester image, on the same platform as
+the final image; `DISTRO` is refused for these targets.
 
 The PAM and sshd settings follow the charter's example for a disposable test
 system (`tests/linux/rootfs/`):
@@ -271,17 +273,20 @@ denies everyone.
 
 | Check | Expected |
 | --- | --- |
+| Synced snapshot fixture (`/var/lib/himmelcloak/users.json`) | present and a valid version-1 sync snapshot |
 | `recovery` is in `/etc/passwd` | present |
-| Its UID | above 0 and below 200000, the synced range |
-| Its groups | not GID 200000 (`himmelcloak`) |
-| Synced snapshot (`/var/lib/himmelcloak/users.json` fixture) | does not list it |
+| Its UID | above 0 and below the snapshot's `uid_min` (200000) |
+| Its groups | not the snapshot's GID (200000, `himmelcloak`) |
+| Snapshot users, group members, reservations | none name `recovery` or use its UID |
 | `pam_himmelcloak.so` | installed and the first `auth` module for sshd |
+| Installed module through a private `required` service (`pamtester`) | loads and denies (`Authentication failure`, not `Module is unknown`) |
 | SSH keyboard-interactive as `recovery` with its local password | signs in |
 | Wrong password, plain `password` authentication, or a Keycloak-mapped name on the local path | refused |
 
 The recovery login passing proves the account still works while
-`pam_himmelcloak` denies; changing the module to `requisite` makes that check
-fail. The recovery password (`local-recovery-test-only`) and the snapshot
+`pam_himmelcloak` denies. Because sshd lists the module as `sufficient`, a module
+that fails to load would be skipped silently, so the separate `pamtester` check
+proves the installed release module really loads. The recovery password (`local-recovery-test-only`) and the snapshot
 fixture exist only inside the image. Containers run on every pull request;
 nightly VMs are planned for console login and other cases containers cannot
 cover.

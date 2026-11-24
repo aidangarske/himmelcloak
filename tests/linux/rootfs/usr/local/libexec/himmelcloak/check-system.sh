@@ -11,10 +11,8 @@ recovery=${RECOVERY_USER:-recovery}
 password=${RECOVERY_PASSWORD:-local-recovery-test-only}
 snapshot=${SNAPSHOT:-/var/lib/himmelcloak/users.json}
 pam_service=${PAM_SERVICE:-/etc/pam.d/sshd}
+load_service=${LOAD_SERVICE:-himmelcloak-load}
 ssh_port=${SSH_PORT:-22}
-# The sync job's default range and shared group (himmelcloak-cli sync-users).
-synced_uid_min=200000
-synced_gid=200000
 
 failures=0
 pass() { printf 'PASS  %s\n' "$1"; }
@@ -34,7 +32,33 @@ ssh_as() {
         "$user@127.0.0.1" "$@"
 }
 
-printf '== Recovery account\n'
+printf '== Synced snapshot fixture\n'
+# Same shape himmelcloak-cli sync-users writes for the NSS module.
+schema='.version == 1
+    and (.namespace | type == "string")
+    and (.mapping | (.uid_min | type == "number") and (.uid_max | type == "number")
+        and (.gid | type == "number") and .uid_min > 0 and .uid_min <= .uid_max)
+    and (.users | type == "array" and all(.[]; (.id | type == "string")
+        and (.username | type == "string") and (.uid | type == "number")
+        and (.gid | type == "number") and (.home | type == "string")
+        and (.shell | type == "string")))
+    and (.groups | type == "array" and all(.[]; (.name | type == "string")
+        and (.gid | type == "number") and (.members | type == "array")))
+    and (.reservations | type == "array" and all(.[]; (.id | type == "string")
+        and (.uid | type == "number") and (.names | type == "array")))'
+synced_uid_min=""
+synced_gid=""
+if [[ ! -f "$snapshot" ]]; then
+    fail "snapshot fixture $snapshot is missing"
+elif ! jq -e "$schema" "$snapshot" >/dev/null 2>&1; then
+    fail "$snapshot is not a valid version-1 sync snapshot"
+else
+    synced_uid_min=$(jq -r '.mapping.uid_min' "$snapshot")
+    synced_gid=$(jq -r '.mapping.gid' "$snapshot")
+    pass "$snapshot is a valid version-1 sync snapshot (UIDs from $synced_uid_min, GID $synced_gid)"
+fi
+
+printf '\n== Recovery account\n'
 if entry=$(grep -E "^${recovery}:" /etc/passwd); then
     pass "$recovery is a local account in /etc/passwd"
 else
@@ -43,23 +67,25 @@ else
 fi
 uid=$(cut -d: -f3 <<<"$entry")
 gid=$(cut -d: -f4 <<<"$entry")
-if [[ -n "$uid" && "$uid" -gt 0 && "$uid" -lt "$synced_uid_min" ]]; then
+if [[ -n "$uid" && -n "$synced_uid_min" && "$uid" -gt 0 && "$uid" -lt "$synced_uid_min" ]]; then
     pass "UID $uid is outside the synced range ($synced_uid_min and up) and not root"
 else
-    fail "UID '${uid}' must be above 0 and below $synced_uid_min"
+    fail "UID '${uid}' must be above 0 and below the synced range '${synced_uid_min}'"
 fi
-if [[ -n "$gid" && "$gid" != "$synced_gid" ]] \
+if [[ -n "$gid" && -n "$synced_gid" && "$gid" != "$synced_gid" ]] \
     && ! id -G "$recovery" 2>/dev/null | tr ' ' '\n' | grep -qx "$synced_gid"; then
     pass "not in the synced himmelcloak group (GID $synced_gid)"
 else
-    fail "$recovery must not be in GID $synced_gid"
+    fail "$recovery must not be in the synced group '${synced_gid}'"
 fi
-if [[ ! -e "$snapshot" ]]; then
-    pass "no synced snapshot present"
-elif grep -q "\"$recovery\"" "$snapshot"; then
-    fail "$recovery appears in $snapshot"
+if [[ -n "$synced_gid" ]] && jq -e --arg name "$recovery" --argjson uid "${uid:-0}" \
+    '([.users[] | select(.username == $name or .uid == $uid)]
+      + [.groups[] | select(.members | index($name))]
+      + [.reservations[] | select((.names | index($name)) or .uid == $uid)]) | length == 0' \
+    "$snapshot" >/dev/null 2>&1; then
+    pass "not in the snapshot's users, group members, or reservations"
 else
-    pass "not listed in $snapshot"
+    fail "$recovery (or its UID) appears in $snapshot"
 fi
 
 printf '\n== PAM stack\n'
@@ -74,6 +100,17 @@ if [[ "$first_auth" == "pam_himmelcloak.so" ]]; then
     pass "pam_himmelcloak.so is the first auth module in $pam_service"
 else
     fail "first auth module in $pam_service is '${first_auth}', not pam_himmelcloak.so"
+fi
+# In sshd's stack the module is "sufficient", so a module that fails to load
+# would be skipped silently. A private service with it "required" tells a
+# real denial (Authentication failure) apart from a load error.
+load_result=$(pamtester "$load_service" "$recovery" authenticate </dev/null 2>&1 || true)
+if [[ "$load_result" == *"Authentication failure"* ]]; then
+    pass "the installed module loads and denies, as expected until HC-42"
+elif [[ "$load_result" == *"Module is unknown"* ]]; then
+    fail "the installed module cannot be loaded (wrong architecture or missing library?)"
+else
+    fail "unexpected result loading the module: ${load_result##*pamtester: }"
 fi
 
 printf '\n== SSH sign-in\n'

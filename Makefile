@@ -1,5 +1,5 @@
 .PHONY: build test demo clean help image unit lint shell test-live test-live-verbose \
-	oracle-up oracle-down pam-smoke linux-test linux-shell native local-build local-all-features \
+	oracle-up oracle-down pam-smoke linux-test linux-shell linux-no-distro native local-build local-all-features \
 	local-test local-lint fmt test-distros nss-module nss-smoke
 .DEFAULT_GOAL := build
 
@@ -85,11 +85,19 @@ oracle-down: clean
 pam-smoke: ## Load the PAM module in a container
 	bash crates/pam_himmelcloak/tests/pam-load-smoke.sh "$(CURDIR)"
 
-linux-test: image ## Boot a disposable Linux test system, check its recovery account and SSH, then remove it
+# The test system is always Debian 12 (built with the default tester image), so
+# refuse DISTRO before spending minutes building another distribution's image.
+LINUX_PREREQ := $(if $(DISTRO),linux-no-distro,image)
+
+linux-test: $(LINUX_PREREQ) ## Boot a disposable Linux test system, check its recovery account and SSH, then remove it
 	tests/linux/run.sh test
 
-linux-shell: image ## Open a shell in a disposable Linux test system (removed when you exit)
+linux-shell: $(LINUX_PREREQ) ## Open a shell in a disposable Linux test system (removed when you exit)
 	tests/linux/run.sh shell
+
+linux-no-distro:
+	@echo "The disposable test system is always Debian 12; run make linux-test without DISTRO." >&2
+	@exit 2
 
 ##@ Native Linux builds without Docker (needs autotools, libtool, pkg-config, clang, rustup)
 

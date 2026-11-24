@@ -7,13 +7,15 @@
 #   shell  boot the system and open a shell in it; it is removed on exit
 #
 # The system runs as a container and is always removed afterwards, so login
-# changes never touch the host. Needs the tester image (make image).
+# changes never touch the host. It is always Debian 12, so the module is built
+# with the default Debian 12 tester image (make image) on that image's
+# platform; DISTRO is not supported here.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 engine=${CONTAINER:-docker}
 mode=${1:-test}
-tester_image=${TESTER_IMAGE:-himmelcloak-tester:ci}
+tester_image=himmelcloak-tester:ci
 system_image=himmelcloak-linux:ci
 name="himmelcloak-linux-$$"
 
@@ -24,8 +26,16 @@ case "$mode" in
         exit 2
         ;;
 esac
+if [[ -n "${DISTRO:-}" ]]; then
+    printf 'The disposable test system is always Debian 12; run it without DISTRO.\n' >&2
+    exit 2
+fi
 if ! command -v "$engine" >/dev/null 2>&1; then
     printf 'Required development tool is missing: %s\n' "$engine" >&2
+    exit 1
+fi
+if ! platform=$("$engine" image inspect --format '{{.Os}}/{{.Architecture}}' "$tester_image" 2>/dev/null); then
+    printf 'Tester image %s not found; run make image first.\n' "$tester_image" >&2
     exit 1
 fi
 
@@ -36,14 +46,17 @@ teardown() {
 trap teardown EXIT
 
 printf 'Building the disposable Linux test system...\n'
+# Build both stages for the tester image's platform, so an amd64 module never
+# lands in an arm64 system (or the reverse).
 "$engine" build \
+    --platform "$platform" \
     --file "$repo/tests/linux/Dockerfile" \
     --build-arg "TESTER_IMAGE=$tester_image" \
     --tag "$system_image" \
     "$repo"
 
 printf 'Booting %s...\n' "$name"
-"$engine" run --detach --name "$name" "$system_image" >/dev/null
+"$engine" run --detach --platform "$platform" --name "$name" "$system_image" >/dev/null
 for _ in $(seq 1 30); do
     if "$engine" exec "$name" test -s /run/sshd.pid; then
         break

@@ -6,7 +6,9 @@
 # ever tested here, never on a member's own computer. Build it with
 # tests/linux/run.sh (make linux-test or make linux-shell).
 
-# The tester image already has the pinned Rust toolchain and native libraries.
+# The default (Debian 12) tester image has the pinned Rust toolchain and native
+# libraries. run.sh always uses it, on the same platform as the final image, so
+# the module matches this image's glibc and architecture.
 ARG TESTER_IMAGE=himmelcloak-tester:ci
 FROM ${TESTER_IMAGE} AS build
 COPY . /src
@@ -23,7 +25,7 @@ RUN apt-get update \
     && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-       openssh-client openssh-server sshpass \
+       jq openssh-client openssh-server pamtester sshpass \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /pam_himmelcloak.so /tmp/pam_himmelcloak.so
@@ -39,7 +41,8 @@ RUN useradd --uid "$RECOVERY_UID" --user-group --create-home --shell /bin/bash r
     && echo 'recovery:local-recovery-test-only' | chpasswd
 
 COPY tests/linux/rootfs/ /
-RUN chmod 0644 /etc/pam.d/sshd /etc/ssh/sshd_config.d/himmelcloak.conf \
+RUN chmod 0644 /etc/pam.d/sshd /etc/pam.d/himmelcloak-load \
+       /etc/ssh/sshd_config.d/himmelcloak.conf \
        /var/lib/himmelcloak/users.json \
     && chmod 0755 /usr/local/libexec/himmelcloak/check-system.sh \
     && ssh-keygen -A \
