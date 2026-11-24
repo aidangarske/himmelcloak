@@ -1,0 +1,15 @@
+# Himmelcloak disposable test system (HC-45). Follows the charter's example
+# PAM configuration for a disposable test system.
+#
+# A Keycloak user signs in through pam_himmelcloak. The local recovery account
+# falls through to pam_unix and signs in with its local password, even while
+# pam_himmelcloak denies every login (it does until HC-42 connects the engine).
+auth     sufficient  pam_himmelcloak.so
+auth     required    pam_unix.so try_first_pass
+
+# HC-42 adds "account [success=ok ignore=ignore default=bad] pam_himmelcloak.so"
+# here, once the module returns PAM_IGNORE for local-only accounts. Until then
+# its account stage denies everyone, which would also lock out recovery.
+account  required    pam_unix.so
+
+session  required    pam_unix.so

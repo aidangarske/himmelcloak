@@ -38,6 +38,8 @@ jobs:
         run: make unit lint
       - name: Load the PAM module
         run: make pam-smoke
+      - name: Boot the disposable Linux test system
+        run: make linux-test
       - name: Build a distro tester image
         run: make image DISTRO=debian-12
       - name: Run live login suite

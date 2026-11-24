@@ -238,3 +238,50 @@ then runs `getent` in a temporary root with its own `nsswitch.conf`. It needs
 permission to create a chroot, either as root in a disposable Linux environment
 or through unprivileged user namespaces. Only the temporary root uses the test
 configuration. No Keycloak server is needed.
+
+## Disposable Linux test systems
+
+Login changes are only tested in disposable systems, never on a member's own
+computer. `make linux-test` builds a Debian 12 container with OpenSSH, the
+Himmelcloak PAM module first in the sshd `auth` stack, and a separate local
+recovery account. It boots the container, runs the checks below inside it, then
+removes it and confirms it is gone. `make linux-shell` boots the same system and
+opens a shell in it for manual PAM and SSH testing; it is removed when you exit.
+Both work with `CONTAINER=podman`.
+
+The PAM and sshd settings follow the charter's example for a disposable test
+system (`tests/linux/rootfs/`):
+
+```text
+auth     sufficient  pam_himmelcloak.so
+auth     required    pam_unix.so try_first_pass
+account  required    pam_unix.so
+session  required    pam_unix.so
+```
+
+```text
+UsePAM yes
+KbdInteractiveAuthentication yes
+PasswordAuthentication no
+```
+
+The `account` line for `pam_himmelcloak` is added by HC-42, once the module
+returns `PAM_IGNORE` for local-only accounts; until then its account stage
+denies everyone.
+
+| Check | Expected |
+| --- | --- |
+| `recovery` is in `/etc/passwd` | present |
+| Its UID | above 0 and below 200000, the synced range |
+| Its groups | not GID 200000 (`himmelcloak`) |
+| Synced snapshot (`/var/lib/himmelcloak/users.json` fixture) | does not list it |
+| `pam_himmelcloak.so` | installed and the first `auth` module for sshd |
+| SSH keyboard-interactive as `recovery` with its local password | signs in |
+| Wrong password, plain `password` authentication, or a Keycloak-mapped name on the local path | refused |
+
+The recovery login passing proves the account still works while
+`pam_himmelcloak` denies; changing the module to `requisite` makes that check
+fail. The recovery password (`local-recovery-test-only`) and the snapshot
+fixture exist only inside the image. Containers run on every pull request;
+nightly VMs are planned for console login and other cases containers cannot
+cover.

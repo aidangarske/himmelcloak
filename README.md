@@ -37,6 +37,7 @@ make help    # all make options
 make         # build every crate
 make test    # unit tests, lint, and the live Keycloak login suite
 make demo    # log in to a real Keycloak with the CLI and show the server's events
+make linux-test   # boot a disposable Linux system and check PAM, SSH, and the recovery account
 make clean   # stop Keycloak and remove the test containers
 ```
 
