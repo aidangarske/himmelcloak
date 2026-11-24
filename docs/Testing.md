@@ -82,10 +82,11 @@ The page fixtures come from `tests/keycloak/capture-pages.sh` against the Keyclo
 release in `tests/fixtures/keycloak/KEYCLOAK_VERSION`, in the `base` and
 `keycloak.v2` themes. `nightly/login-otp-devices.html` is Keycloak nightly's
 device page, whose device radios are named through `aria-labelledby`.
-The additional method-selection fixtures preserve that release's stock form
-structures with fixed execution IDs and abbreviated surrounding markup; the
-navigation fixtures add its separate "try another way" form to the captured
-login and OTP pages.
+The release method-selection fixtures preserve that release's stock form
+structures with fixed execution IDs and abbreviated surrounding markup. The
+nightly selector fixture covers the current `base` theme's card-local form
+lookup. Navigation fixtures add the release's separate "try another way" form
+to the captured login and OTP pages.
 
 The challenge/answer contract is unit-tested without a server in `src/client.rs`
 and `src/flow/driver.rs`. Stub factor handlers drive recorded Keycloak pages
@@ -97,7 +98,8 @@ redirects the login cannot follow, a non-200 page, another client continuing
 the login, a failing handler, and a step abandoned mid-request.
 
 Method-selection fixtures cover the stock `base` submit buttons and
-`keycloak.v2` per-method forms. Unit tests switch from an unfinished prompt to
+`keycloak.v2` per-method forms, plus the current `base` theme's closest-card
+form binding. Unit tests switch from an unfinished prompt to
 the chooser, select a password or OTP method, and complete the login with
 verified tokens through the existing handlers. They check exact request bodies,
 preserved login state, unknown and stale execution IDs, malformed forms,

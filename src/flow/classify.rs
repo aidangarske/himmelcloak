@@ -108,8 +108,10 @@ pub(super) struct ScannedForm {
     pub(super) action: Option<String>,
     pub(super) method: Option<String>,
     pub(super) controls: Vec<Control>,
-    /// keycloak.v2 puts the clickable label immediately outside its method's hidden form.
+    /// Some stock themes put the clickable label outside its method's hidden form.
     method_text: Option<String>,
+    /// The nearest enclosing list item, used by current base-theme method cards.
+    list_item: Option<usize>,
 }
 
 impl ScannedForm {
@@ -132,6 +134,21 @@ struct Tile {
     text: String,
 }
 
+/// `closest('li').querySelector('form')` is scoped to one card, not the previous global form.
+#[derive(Default)]
+struct ListItem {
+    form_start: usize,
+    form_end: Option<usize>,
+    list_depth: usize,
+    label_claimed: bool,
+    text: Option<String>,
+}
+
+enum MethodForm {
+    Index(usize),
+    ClosestListItem,
+}
+
 enum Target {
     Label(String),
     Title(String),
@@ -139,6 +156,7 @@ enum Target {
     FieldError,
     MethodButton(usize, usize),
     MethodTile(usize),
+    MethodItem(usize),
 }
 
 /// Whether `id` marks Keycloak's message for a rejected field: `input-error` in `base`,
@@ -166,6 +184,13 @@ struct Capture {
 pub(super) struct Scan {
     pub(super) forms: Vec<ScannedForm>,
     in_form: Option<usize>,
+    list_items: Vec<ListItem>,
+    list_stack: Vec<usize>,
+    elements: Vec<Vec<u8>>,
+    list_depth: usize,
+    malformed_list: bool,
+    closest_method: bool,
+    invalid_method_tile: bool,
     labels: Vec<(String, String)>,
     /// Text of elements a device radio names through `aria-labelledby`, keyed by their ID.
     titles: Vec<(String, String)>,
@@ -214,6 +239,7 @@ impl Scan {
             }
         }
         scan.suspicious |= scan.in_form.is_some();
+        scan.bind_method_items();
         scan
     }
 
@@ -225,6 +251,7 @@ impl Scan {
         if self.templates > 0 {
             return;
         }
+        self.start_scope(name, tag.self_closing);
         if let Some(capture) = &mut self.capture {
             if capture.tag == name && !tag.self_closing {
                 capture.depth += 1;
@@ -233,11 +260,13 @@ impl Scan {
         match name {
             b"form" if self.in_form.is_some() => self.suspicious = true,
             b"form" => {
-                self.in_form = Some(self.forms.len());
+                let index = self.forms.len();
+                self.in_form = Some(index);
                 self.forms.push(ScannedForm {
                     id: attribute(tag, "id"),
                     action: attribute(tag, "action"),
                     method: attribute(tag, "method"),
+                    list_item: self.list_stack.last().copied(),
                     ..ScannedForm::default()
                 });
             }
@@ -249,18 +278,38 @@ impl Scan {
             }
             _ => {}
         }
-        // This is a fixed stock-template call, never arbitrary JavaScript to execute. Its
-        // ordinal binds the label to one of keycloak.v2's otherwise empty-looking forms.
+        // Recognize only stock-template calls; never execute JavaScript from the page.
         if name == b"div" && attribute(tag, "role").as_deref() == Some("button") {
-            if let Some(index) = attribute(tag, "onclick").and_then(|call| method_form(&call)) {
-                if self.in_form.is_some()
-                    || index >= self.forms.len()
-                    || self.forms[index].method_text.is_some()
-                {
-                    self.suspicious = true;
-                } else {
-                    self.begin(Target::MethodTile(index), name, tag.self_closing);
+            match attribute(tag, "onclick").and_then(|call| method_form(&call)) {
+                Some(MethodForm::Index(index)) => {
+                    if self.in_form.is_some()
+                        || self.capture.is_some()
+                        || index >= self.forms.len()
+                        || self.forms[index].method_text.is_some()
+                    {
+                        self.suspicious = true;
+                        self.invalid_method_tile = true;
+                    } else {
+                        self.begin(Target::MethodTile(index), name, tag.self_closing);
+                    }
                 }
+                Some(MethodForm::ClosestListItem) => {
+                    self.closest_method = true;
+                    if let Some(item) = self.list_stack.last().copied() {
+                        if self.in_form.is_some()
+                            || self.capture.is_some()
+                            || self.list_items[item].label_claimed
+                        {
+                            self.invalid_method_tile = true;
+                        } else {
+                            self.list_items[item].label_claimed = true;
+                            self.begin(Target::MethodItem(item), name, tag.self_closing);
+                        }
+                    } else {
+                        self.invalid_method_tile = true;
+                    }
+                }
+                None => self.invalid_method_tile = true,
             }
         }
         if attribute(tag, "id").is_some_and(|id| is_field_error(&id)) {
@@ -357,6 +406,64 @@ impl Scan {
         }
     }
 
+    fn start_scope(&mut self, name: &[u8], self_closing: bool) {
+        if is_void(name) {
+            return;
+        }
+        if self_closing {
+            // A self-closing HTML container is not a reliable boundary for closest('li').
+            self.malformed_list |= matches!(name, b"li" | b"ul" | b"ol" | b"div" | b"form");
+            return;
+        }
+        if matches!(name, b"ul" | b"ol") {
+            self.list_depth += 1;
+        }
+        if name == b"li" {
+            if self
+                .list_stack
+                .last()
+                .is_some_and(|item| self.list_items[*item].list_depth == self.list_depth)
+            {
+                // Browsers implicitly close a sibling <li>; require explicit card boundaries.
+                self.malformed_list = true;
+            }
+            self.list_stack.push(self.list_items.len());
+            self.list_items.push(ListItem {
+                form_start: self.forms.len(),
+                list_depth: self.list_depth,
+                ..ListItem::default()
+            });
+        }
+        self.elements.push(name.to_vec());
+    }
+
+    fn end_scope(&mut self, name: &[u8]) {
+        if is_void(name) {
+            return;
+        }
+        if self.elements.last().map(Vec::as_slice) != Some(name) {
+            // A prematurely closed ancestor must not leave a stale list-item binding.
+            self.malformed_list = true;
+            return;
+        }
+        self.elements.pop();
+        if matches!(name, b"ul" | b"ol") {
+            self.list_depth -= 1;
+        }
+        if name == b"li" {
+            if let Some(item) = self.list_stack.pop() {
+                self.list_items[item].form_end = Some(self.forms.len());
+                if self.capture.as_ref().is_some_and(
+                    |capture| matches!(capture.target, Target::MethodItem(owner) if owner == item),
+                ) {
+                    self.invalid_method_tile = true;
+                }
+            } else {
+                self.malformed_list = true;
+            }
+        }
+    }
+
     fn end(&mut self, name: &HtmlString) {
         if self.templates > 0 {
             if name.as_slice() == b"template" {
@@ -367,6 +474,7 @@ impl Scan {
         if name.as_slice() == b"form" {
             self.in_form = None;
         }
+        self.end_scope(name.as_slice());
         match self.capture.take() {
             Some(mut capture) if capture.tag == name.as_slice() => {
                 capture.depth -= 1;
@@ -391,9 +499,37 @@ impl Scan {
                     Target::MethodTile(form) => {
                         self.forms[form].method_text = Some(capture.text);
                     }
+                    Target::MethodItem(item) => {
+                        self.list_items[item].text = Some(capture.text);
+                    }
                 }
             }
             other => self.capture = other,
+        }
+    }
+
+    fn bind_method_items(&mut self) {
+        if self.closest_method && (self.malformed_list || !self.list_stack.is_empty()) {
+            self.invalid_method_tile = true;
+        }
+        for (owner, item) in self.list_items.iter_mut().enumerate() {
+            let Some(text) = item.text.take() else {
+                continue;
+            };
+            // Check after the full scan: a second form added after the label is ambiguous too.
+            if item.form_end != item.form_start.checked_add(1) {
+                self.invalid_method_tile = true;
+                continue;
+            }
+            let form = &mut self.forms[item.form_start];
+            let single_method = matches!(form.controls.as_slice(), [control]
+                if control.name == "authenticationExecution" && control.element == "input"
+                    && control.kind == "hidden" && !control.disabled);
+            if form.list_item != Some(owner) || form.method_text.is_some() || !single_method {
+                self.invalid_method_tile = true;
+            } else {
+                form.method_text = Some(text);
+            }
         }
     }
 
@@ -450,7 +586,7 @@ impl Scan {
     }
 
     fn methods(&self) -> Option<Vec<AuthMethod>> {
-        if !self.tiles.is_empty() {
+        if !self.tiles.is_empty() || self.invalid_method_tile {
             return None;
         }
         let methods: Vec<AuthMethod> = if self.forms.len() == 1
@@ -573,14 +709,37 @@ impl Scan {
     }
 }
 
-fn method_form(onclick: &str) -> Option<usize> {
-    onclick
-        .trim()
-        .trim_end_matches(';')
-        .strip_prefix("document.forms[")?
+/// Void elements cannot enclose a list item or alter its nearest enclosing container.
+fn is_void(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"area"
+            | b"base"
+            | b"br"
+            | b"col"
+            | b"embed"
+            | b"hr"
+            | b"img"
+            | b"input"
+            | b"link"
+            | b"meta"
+            | b"param"
+            | b"source"
+            | b"track"
+            | b"wbr"
+    )
+}
+
+fn method_form(onclick: &str) -> Option<MethodForm> {
+    let call = onclick.trim().strip_suffix(';').unwrap_or(onclick.trim());
+    if call == "this.closest('li').querySelector('form').requestSubmit()" {
+        return Some(MethodForm::ClosestListItem);
+    }
+    call.strip_prefix("document.forms[")?
         .strip_suffix("].requestSubmit()")?
         .parse()
         .ok()
+        .map(MethodForm::Index)
 }
 
 fn attribute(tag: &StartTag<()>, name: &str) -> Option<String> {
@@ -659,6 +818,8 @@ mod tests {
         include_str!("../../tests/fixtures/keycloak/base/select-authenticator.html");
     const V2_METHODS: &str =
         include_str!("../../tests/fixtures/keycloak/keycloak.v2/select-authenticator.html");
+    const NIGHTLY_METHODS: &str =
+        include_str!("../../tests/fixtures/keycloak/nightly/select-authenticator.html");
     const NAVIGATION_PAGES: &[&str] = &[
         include_str!("../../tests/fixtures/keycloak/base/login-try-another-way.html"),
         include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-try-another-way.html"),
@@ -1034,7 +1195,7 @@ mod tests {
                 "Authenticator application Enter a verification code from an authenticator application".into(),
             ),
         ];
-        for html in [BASE_METHODS, V2_METHODS] {
+        for html in [BASE_METHODS, V2_METHODS, NIGHTLY_METHODS] {
             assert_eq!(methods(html), Some(expected.clone()));
             assert_eq!(kind(html).rejection(), None);
         }
@@ -1053,7 +1214,7 @@ mod tests {
 
     #[test]
     fn malformed_method_choices_are_unknown() {
-        for html in [BASE_METHODS, V2_METHODS] {
+        for html in [BASE_METHODS, V2_METHODS, NIGHTLY_METHODS] {
             for replacement in ["", " ", "password-execution"] {
                 assert!(is_unknown(&html.replace("otp-execution", replacement)));
             }
@@ -1092,7 +1253,7 @@ mod tests {
                 &V2_METHODS.replace("document.forms[1].requestSubmit()", call,)
             ));
         }
-        for html in [BASE_METHODS, V2_METHODS] {
+        for html in [BASE_METHODS, V2_METHODS, NIGHTLY_METHODS] {
             let localized = html.replace("Password", "Mot\u{202e} de\u{1b} passe\n");
             let parsed = methods(&localized).unwrap();
             assert_eq!(parsed[0].1, "Mot de passe Sign in with your password");
@@ -1124,5 +1285,131 @@ mod tests {
                 assert!(is_unknown(&changed));
             }
         }
+    }
+
+    const CLOSEST_FORM: &str = "this.closest('li').querySelector('form').requestSubmit()";
+
+    fn method_hidden_form(id: &str) -> String {
+        format!(
+            r#"<form method="post"><input type="hidden" name="authenticationExecution" value="{id}"></form>"#
+        )
+    }
+
+    fn method_card_label(label: &str) -> String {
+        format!(r#"<div role="button" onclick="{CLOSEST_FORM}"><h2>{label}</h2></div>"#)
+    }
+
+    #[test]
+    fn current_base_method_labels_bind_to_their_nearest_list_item() {
+        // Nested wrappers and an outer list item must not change the card's nearest <li>.
+        let password = method_hidden_form("password-execution");
+        let password_label = method_card_label("Mot\u{202e} de\u{1b} passe");
+        let otp = method_hidden_form("otp-execution");
+        let otp_label = method_card_label("Authenticator application");
+        let page = format!("<ul><li><ul><li><div>{password}<div>{password_label}</div></div></li><li>{otp}{otp_label}</li></ul></li></ul>");
+        assert_eq!(
+            methods(&page),
+            Some(vec![
+                ("password-execution".into(), "Mot de passe".into()),
+                ("otp-execution".into(), "Authenticator application".into()),
+            ])
+        );
+        assert_eq!(
+            methods(&NIGHTLY_METHODS.replace(CLOSEST_FORM, &format!(" {CLOSEST_FORM}; "))),
+            methods(NIGHTLY_METHODS)
+        );
+    }
+
+    #[test]
+    fn current_base_labels_cannot_use_a_sibling_or_ancestor_cards_form() {
+        let form = method_hidden_form("password-execution");
+        let label = method_card_label("Password");
+        for page in [
+            format!("<ul><li>{form}</li><li>{label}</li></ul>"),
+            format!("<ul><li>{label}</li><li>{form}</li></ul>"),
+            format!("<ul><li>{form}<ul><li>{label}</li></ul></li></ul>"),
+            format!("<ul><li><ul><li>{form}</li></ul>{label}</li></ul>"),
+            format!("<section>{form}{label}</section>"),
+        ] {
+            assert!(is_unknown(&page), "{page}");
+        }
+    }
+
+    #[test]
+    fn current_base_cards_refuse_multiple_forms_and_duplicate_labels() {
+        let form = method_hidden_form("password-execution");
+        let other_form = method_hidden_form("otp-execution");
+        let label = method_card_label("Password");
+        for contents in [
+            format!("{form}{other_form}{label}"),
+            format!("{form}{label}{other_form}"),
+            format!("{form}<ul><li>{other_form}</li></ul>{label}"),
+            format!("{form}{label}{label}"),
+            format!(
+                r#"{form}{label}<div role="button" onclick="document.forms[0].requestSubmit()">Other label</div>"#
+            ),
+            format!(
+                r#"{form}{label}<div role="button" onclick="{CLOSEST_FORM};document.forms[0].requestSubmit()">Other label</div>"#
+            ),
+        ] {
+            let page = format!("<ul><li>{contents}</li></ul>");
+            assert!(is_unknown(&page), "{page}");
+        }
+    }
+
+    #[test]
+    fn current_base_cards_refuse_missing_or_unclosed_list_item_scopes() {
+        let form = method_hidden_form("password-execution");
+        let label = method_card_label("Password");
+        for page in [
+            format!("{form}{label}"),
+            format!("<ul><li>{form}{label}</ul>"),
+            format!("<ul><li>{form}{label}</li></li></ul>"),
+            format!("<ul><li>{form}</ul>{label}</li>"),
+            format!("<div><ul><li>{form}</div>{label}</li></ul>"),
+            format!("<ul><li>{form}<div role=\"button\" onclick=\"{CLOSEST_FORM}\">Password</li></div></ul>"),
+        ] {
+            assert!(is_unknown(&page), "{page}");
+        }
+    }
+
+    #[test]
+    fn current_base_cards_recognize_only_the_stock_form_reference() {
+        for call in [
+            "this.closest('ul').querySelector('form').requestSubmit()",
+            "this.closest('li').querySelector('input').requestSubmit()",
+            "this.closest('li').querySelector('form').submit()",
+            "this.closest('li').querySelectorAll('form')[0].requestSubmit()",
+            "this.closest('li').querySelector('form').requestSubmit();document.forms[0].requestSubmit()",
+        ] {
+            assert!(is_unknown(&NIGHTLY_METHODS.replace(CLOSEST_FORM, call)), "{call}");
+        }
+        let with_inert_forms = NIGHTLY_METHODS.replace(
+            "</form>",
+            "</form><template><li><form><input name=\"password\"></form></li></template>",
+        );
+        assert_eq!(methods(&with_inert_forms), methods(NIGHTLY_METHODS));
+    }
+
+    #[test]
+    fn invalid_indexed_method_references_still_refuse_ordinary_login_pages() {
+        for page in [BASE_LOGIN, V2_LOGIN, BASE_OTP, V2_OTP] {
+            let page = format!(
+                r#"{page}<div role="button" onclick="document.forms[999].requestSubmit()">Invalid choice</div>"#
+            );
+            assert!(is_unknown(&page));
+        }
+    }
+
+    #[test]
+    fn deeply_nested_lists_with_many_forms_are_refused() {
+        // This fits within the response limit; forms must not be copied for every ancestor.
+        let page = format!(
+            "{}{}{}",
+            "<li>".repeat(30_000),
+            "<form></form>".repeat(30_000),
+            "</li>".repeat(30_000),
+        );
+        assert!(is_unknown(&page));
     }
 }

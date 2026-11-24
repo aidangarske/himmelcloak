@@ -1160,6 +1160,8 @@ mod tests {
         include_str!("../tests/fixtures/keycloak/base/select-authenticator.html");
     const V2_METHODS: &str =
         include_str!("../tests/fixtures/keycloak/keycloak.v2/select-authenticator.html");
+    const NIGHTLY_METHODS: &str =
+        include_str!("../tests/fixtures/keycloak/nightly/select-authenticator.html");
     const KEYCLOAK: &str = "https://keycloak.test:8443/realms/himmelcloak-test";
     const FIRST_DEVICE: &str = "00000000-0000-4000-8000-000000000001";
     const SECOND_DEVICE: &str = "00000000-0000-4000-8000-000000000002";
@@ -1304,6 +1306,7 @@ mod tests {
         for (login, methods_page, otp_page) in [
             (BASE_ALTERNATE_LOGIN, BASE_METHODS, CODE_PAGE),
             (V2_ALTERNATE_LOGIN, V2_METHODS, V2_CODE_PAGE),
+            (BASE_ALTERNATE_LOGIN, NIGHTLY_METHODS, CODE_PAGE),
         ] {
             let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |flow| {
                 let fixture = nonce_fixture();
@@ -1390,6 +1393,7 @@ mod tests {
         for (login, methods_page, password_page) in [
             (BASE_ALTERNATE_LOGIN, BASE_METHODS, LOGIN_PAGE),
             (V2_ALTERNATE_LOGIN, V2_METHODS, V2_LOGIN_PAGE),
+            (BASE_ALTERNATE_LOGIN, NIGHTLY_METHODS, LOGIN_PAGE),
         ] {
             let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |flow| {
                 let fixture = nonce_fixture();

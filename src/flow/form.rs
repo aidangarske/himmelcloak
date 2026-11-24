@@ -353,6 +353,8 @@ mod tests {
         include_str!("../../tests/fixtures/keycloak/base/select-authenticator.html");
     const V2_METHODS: &str =
         include_str!("../../tests/fixtures/keycloak/keycloak.v2/select-authenticator.html");
+    const NIGHTLY_METHODS: &str =
+        include_str!("../../tests/fixtures/keycloak/nightly/select-authenticator.html");
     const NAVIGATION_PAGES: &[&str] = &[
         include_str!("../../tests/fixtures/keycloak/base/login-try-another-way.html"),
         include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-try-another-way.html"),
@@ -732,7 +734,7 @@ mod tests {
 
     #[tokio::test]
     async fn method_selection_posts_only_the_chosen_execution() {
-        for html in [BASE_METHODS, V2_METHODS] {
+        for html in [BASE_METHODS, V2_METHODS, NIGHTLY_METHODS] {
             for chosen in ["password-execution", "otp-execution"] {
                 let (kind, form) = extract(&page(html)).unwrap();
                 assert!(matches!(kind, PageKind::ChooseMethod { .. }));
@@ -756,7 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_missing_and_repeated_method_choices_send_nothing() {
-        for html in [BASE_METHODS, V2_METHODS] {
+        for html in [BASE_METHODS, V2_METHODS, NIGHTLY_METHODS] {
             for (answers, reason) in [
                 (
                     &[("authenticationExecution", "unknown")][..],
@@ -817,6 +819,7 @@ mod tests {
             V2_OTP,
             BASE_METHODS,
             V2_METHODS,
+            NIGHTLY_METHODS,
         ] {
             let form = form(html);
             assert!(!form.can_try_another_way());
@@ -874,7 +877,7 @@ mod tests {
                 query.replace("session_code=FIXTURE", "session_code=ANOTHER-SESSION")
             ),
         ];
-        for html in [V2_METHODS]
+        for html in [V2_METHODS, NIGHTLY_METHODS]
             .into_iter()
             .chain(NAVIGATION_PAGES.iter().copied())
         {

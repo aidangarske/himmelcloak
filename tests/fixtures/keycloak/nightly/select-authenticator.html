@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<!-- Reduced fixture from Keycloak main's base/login/select-authenticator.ftl, observed 2026-11-23.
+     Source: https://github.com/keycloak/keycloak/blob/main/themes/src/main/resources/theme/base/login/select-authenticator.ftl
+     Session and execution IDs are fixed placeholders; this is not a captured live page. -->
+<html lang="en"><body data-page-id="login-select-authenticator">
+<h1>Try Another Way</h1>
+<ul role="list">
+    <li>
+        <form id="kc-select-credential-form" action="https://keycloak.test:8443/realms/himmelcloak-test/login-actions/authenticate?session_code=FIXTURE&amp;execution=FIXTURE&amp;client_id=himmelcloak-test-client&amp;tab_id=FIXTURE&amp;client_data=FIXTURE" method="post">
+            <input type="hidden" name="authenticationExecution" value="password-execution">
+        </form>
+        <div role="button" tabindex="0"
+             onclick="this.closest('li').querySelector('form').requestSubmit()"
+             onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); this.click(); }">
+            <div><div><i></i></div>
+                <div><h2>Password</h2></div>
+                <div>Sign in with your password</div>
+            </div>
+            <div><i aria-hidden="true"></i></div>
+        </div>
+    </li>
+    <li>
+        <form id="kc-select-credential-form" action="https://keycloak.test:8443/realms/himmelcloak-test/login-actions/authenticate?session_code=FIXTURE&amp;execution=FIXTURE&amp;client_id=himmelcloak-test-client&amp;tab_id=FIXTURE&amp;client_data=FIXTURE" method="post">
+            <input type="hidden" name="authenticationExecution" value="otp-execution">
+        </form>
+        <div role="button" tabindex="0"
+             onclick="this.closest('li').querySelector('form').requestSubmit()"
+             onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); this.click(); }">
+            <div><div><i></i></div>
+                <div><h2>Authenticator application</h2></div>
+                <div>Enter a verification code from an authenticator application</div>
+            </div>
+            <div><i aria-hidden="true"></i></div>
+        </div>
+    </li>
+</ul>
+</body></html>

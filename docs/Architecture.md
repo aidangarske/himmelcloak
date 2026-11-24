@@ -91,8 +91,8 @@ The returned page goes through the existing factor handler in the same login,
 with the same cookies, client binding, state, nonce, PKCE verifier, and deadline.
 Switching never restarts an ended login or supplies an answer to the old factor.
 
-The chooser supports the stock `base` theme's submit buttons and
-`keycloak.v2`'s separate forms. Each form must share the same validated action
+The chooser supports the submit-button and per-method form layouts used by the
+stock `base` and `keycloak.v2` themes. Each form must share the same validated action
 and session values. The parser binds each label to its form without executing
 JavaScript. Other extra forms, unexpected fields, duplicate execution IDs, and
 choices the page did not offer are refused. Selecting an unsupported factor
