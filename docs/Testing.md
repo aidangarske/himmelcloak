@@ -286,7 +286,10 @@ denies everyone.
 The recovery login passing proves the account still works while
 `pam_himmelcloak` denies. Because sshd lists the module as `sufficient`, a module
 that fails to load would be skipped silently, so the separate `pamtester` check
-proves the installed release module really loads. The recovery password (`local-recovery-test-only`) and the snapshot
+proves the installed release module really loads. The module needs `libbrotli1`
+and `zlib1g` at runtime (libcurl is built with their decoders), so the image
+installs them and its build fails with the missing names if any library the
+module links against is absent. The recovery password (`local-recovery-test-only`) and the snapshot
 fixture exist only inside the image. Containers run on every pull request;
 nightly VMs are planned for console login and other cases containers cannot
 cover.

@@ -26,11 +26,19 @@ RUN apt-get update \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
        jq openssh-client openssh-server pamtester sshpass \
+       libbrotli1 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
+# The module's runtime libraries: libcurl is built with the Brotli and zlib
+# decoders the tester image provides. Fail here, with the missing names, if
+# anything the module links against is absent.
 COPY --from=build /pam_himmelcloak.so /tmp/pam_himmelcloak.so
-RUN install -m 0644 /tmp/pam_himmelcloak.so "/usr/lib/$(uname -m)-linux-gnu/security/pam_himmelcloak.so" \
-    && rm /tmp/pam_himmelcloak.so
+RUN module="/usr/lib/$(uname -m)-linux-gnu/security/pam_himmelcloak.so" \
+    && install -m 0644 /tmp/pam_himmelcloak.so "$module" \
+    && rm /tmp/pam_himmelcloak.so \
+    && if ldd "$module" | grep 'not found'; then \
+         echo "pam_himmelcloak.so is missing the libraries above" >&2; exit 1; \
+       fi
 
 # The documented local recovery account: an ordinary local user whose UID is
 # far below the synced Keycloak range (200000 and up) and whose password is
