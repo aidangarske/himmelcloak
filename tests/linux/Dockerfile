@@ -33,7 +33,11 @@ RUN apt-get update \
 # decoders the tester image provides. Fail here, with the missing names, if
 # anything the module links against is absent.
 COPY --from=build /pam_himmelcloak.so /tmp/pam_himmelcloak.so
-RUN module="/usr/lib/$(uname -m)-linux-gnu/security/pam_himmelcloak.so" \
+# Install beside Debian's own pam_unix.so: uname -m does not always match
+# Debian's multiarch directory name (i686 vs i386-linux-gnu, for example).
+RUN unix=$(find /usr/lib /lib -path '*/security/pam_unix.so' -print -quit) \
+    && test -n "$unix" \
+    && module="$(dirname "$unix")/pam_himmelcloak.so" \
     && install -m 0644 /tmp/pam_himmelcloak.so "$module" \
     && rm /tmp/pam_himmelcloak.so \
     && if ldd "$module" | grep 'not found'; then \
