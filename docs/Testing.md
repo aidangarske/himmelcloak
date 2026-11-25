@@ -82,6 +82,11 @@ The page fixtures come from `tests/keycloak/capture-pages.sh` against the Keyclo
 release in `tests/fixtures/keycloak/KEYCLOAK_VERSION`, in the `base` and
 `keycloak.v2` themes. `nightly/login-otp-devices.html` is Keycloak nightly's
 device page, whose device radios are named through `aria-labelledby`.
+The release method-selection fixtures preserve that release's stock form
+structures with fixed execution IDs and abbreviated surrounding markup. The
+nightly selector fixture covers the current `base` theme's card-local form
+lookup. Navigation fixtures add the release's separate "try another way" form
+to the captured login and OTP pages.
 
 The challenge/answer contract is unit-tested without a server in `src/client.rs`
 and `src/flow/driver.rs`. Stub factor handlers drive recorded Keycloak pages
@@ -91,6 +96,30 @@ before anything more is sent: a wrong answer at each step, an ended or idle
 login, a time limit reached between challenges or during a request, pages and
 redirects the login cannot follow, a non-200 page, another client continuing
 the login, a failing handler, and a step abandoned mid-request.
+
+Method-selection fixtures cover the stock `base` submit buttons and
+`keycloak.v2` per-method forms, plus the current `base` theme's closest-card
+form binding. Unit tests switch from an unfinished prompt to
+the chooser, select a password or OTP method, and complete the login with
+verified tokens through the existing handlers. They check exact request bodies,
+preserved login state, unknown and stale execution IDs, malformed forms,
+session/action binding, and refused navigation after expiry or cancellation.
+CLI pseudo-terminal tests in `crates/himmelcloak-cli/src/test_login_method_switch_tests.rs`
+run the production conversation loop with scripted client replies during normal
+`cargo test`. They enter a username, request another way, choose an offered
+password or OTP method, and complete it while checking prompt order, the exact
+submitted answers, and hidden input. Separate conversations switch back to an
+already submitted factor and verify that no second secret or navigation prompt
+appears and the login is cancelled.
+
+The disposable `himmelcloak-method-choice` client uses a separate flow with
+password followed by enrolled OTP/WebAuthn alternatives. Its `method-choice`
+user has both credentials. The ignored live scenario
+`live_method_selection_returns_to_the_code_factor_and_completes_login` opens
+the chooser from the OTP page, selects the offered OTP execution, and finishes
+through the normal OTP handler with verified tokens and the expected identity.
+It runs with the existing live-suite commands when `password` and `totp` are
+enabled.
 
 The exact Cargo versions remain in `Cargo.lock` for reproducible builds.
 Dependabot checks Cargo and GitHub Actions updates weekly, while the resolver

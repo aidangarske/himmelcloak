@@ -149,6 +149,9 @@ pub enum Answer {
     WebAuthn(WebAuthnAssertion),
     /// The chosen `AuthMethod::id`.
     ChooseMethod(String),
+    /// Open Keycloak's method chooser instead of answering the current challenge.
+    /// Available only when `AuthFlow::can_try_another_way` returns true.
+    TryAnotherWay,
     RequiredAction(RequiredActionAnswer),
     Acknowledge,
 }
@@ -223,6 +226,16 @@ impl AuthFlow {
     pub fn is_active(&mut self) -> bool {
         self.expire_if_due();
         self.lifecycle == FlowState::Active
+    }
+
+    /// Whether Keycloak offered a different sign-in method on the waiting page.
+    /// Send `Answer::TryAnotherWay` to discard this page's answers and open its method chooser.
+    pub fn can_try_another_way(&mut self) -> bool {
+        self.is_active()
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(driver::Pending::can_try_another_way)
     }
 
     /// Gate every step: a cancelled, expired, or finished login never reaches Keycloak again.

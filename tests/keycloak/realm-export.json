@@ -52,6 +52,21 @@
       "authenticationFlowBindingOverrides": {
         "browser": "fixture-webauthn"
       }
+    },
+    {
+      "clientId": "himmelcloak-method-choice",
+      "name": "Himmelcloak authentication-method selection tests",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://127.0.0.1:8845/himmelcloak/callback"
+      ],
+      "authenticationFlowBindingOverrides": {
+        "browser": "fixture-method-choice"
+      }
     }
   ],
     "users": [
@@ -94,6 +109,29 @@
           "type": "password",
           "value": "correct-horse-battery-staple",
           "temporary": false
+        },
+        {
+          "type": "webauthn",
+          "userLabel": "Software test credential",
+          "secretData": "{}",
+          "credentialData": "{\"aaguid\":\"00000000-0000-0000-0000-000000000000\",\"credentialId\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"counter\":0,\"attestationStatement\":\"oA\",\"credentialPublicKey\":\"pQECAyYgASFYIGsX0fLhLEJH-Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWIlggT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU\",\"attestationStatementFormat\":\"none\",\"transports\":[]}"
+        }
+      ]
+    },
+    {
+      "username": "method-choice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Method",
+      "lastName": "Choice",
+      "email": "method-choice@example.invalid",
+      "credentials": [
+        {"type": "password", "value": "correct-horse-battery-staple", "temporary": false},
+        {
+          "type": "otp",
+          "userLabel": "Authenticator app",
+          "secretData": "{\"value\":\"NVSXI2DPMQWWG2DPNFRWKLLTMVRXEZLU\"}",
+          "credentialData": "{\"subType\":\"totp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\",\"secretEncoding\":\"BASE32\"}"
         },
         {
           "type": "webauthn",
@@ -188,6 +226,50 @@
         }
       ],
       "id": "fixture-webauthn"
+    },
+    {
+      "id": "fixture-method-choice",
+      "alias": "fixture-method-choice",
+      "description": "Test-only password followed by a choice of enrolled second factors",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-username-password-form",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorFlow": false
+        },
+        {
+          "flowAlias": "fixture-method-choice-factors",
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "authenticatorFlow": true
+        }
+      ]
+    },
+    {
+      "id": "fixture-method-choice-factors",
+      "alias": "fixture-method-choice-factors",
+      "description": "Test-only alternatives for the method-choice user's enrolled factors",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-otp-form",
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "authenticatorFlow": false
+        },
+        {
+          "authenticator": "webauthn-authenticator",
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "authenticatorFlow": false
+        }
+      ]
     }
   ]
 }

@@ -37,7 +37,7 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
-use crate::flow::classify::{PageKind, Scan};
+use crate::flow::classify::{PageKind, Scan, ScannedForm};
 use crate::flow::fetch::{self, CookieJar, Fetched, Page};
 use crate::transport::HttpTransport;
 
@@ -56,6 +56,10 @@ pub(crate) struct Form {
     fields: Vec<(String, Zeroizing<String>)>,
     /// The OTP devices the page offers; a chosen `selectedCredentialId` must be one of them.
     devices: Vec<String>,
+    /// A method selector posts exactly one offered execution ID.
+    methods: Vec<String>,
+    /// Separately validated navigation; submitting it must not send primary-form answers.
+    alternative: Option<Url>,
 }
 
 /// Classify `page` and extract its form. An unknown page, or a form that does not post to
@@ -66,21 +70,43 @@ pub(crate) fn extract(page: &Page) -> Result<(PageKind, Form)> {
     let scan = Scan::run(html);
     // `kind()` returns `None` for every page it does not recognise, never `Some(Unknown)`.
     let kind = scan.kind().ok_or(Error::Protocol("unknown login page"))?;
-    let (posted, mut devices) = if let PageKind::OneTimeCode { devices, .. } = &kind {
-        let ids = devices.iter().map(|device| device.id.clone()).collect();
-        (OTP_POSTED, ids)
-    } else {
-        (LOGIN_POSTED, Vec::new())
+    let primary = scan.primary();
+    check_method(primary)?;
+    let mut action = action_url(&page.url, primary.action.as_deref())?;
+    let methods: Vec<String> = match &kind {
+        PageKind::ChooseMethod { methods } => {
+            methods.iter().map(|method| method.id.clone()).collect()
+        }
+        _ => Vec::new(),
     };
-    if !scan
-        .method
-        .as_deref()
-        .is_some_and(|method| method.eq_ignore_ascii_case("post"))
-    {
-        return Err(Error::Protocol("login form must use POST"));
+    // Stock templates use the same action/session for every choice and the auxiliary form.
+    // Checking every form also refuses an unused hostile action before offering any choice.
+    let remaining = || -> Result<()> {
+        for other in scan.forms.iter().skip(1) {
+            check_method(other)?;
+            let mut other_action = action_url(&page.url, other.action.as_deref())?;
+            let same = other_action == action;
+            fetch::scrub_url(&mut other_action);
+            if !same {
+                return Err(Error::Protocol("login forms do not share the same session"));
+            }
+        }
+        Ok(())
+    };
+    if let Err(error) = remaining() {
+        fetch::scrub_url(&mut action);
+        return Err(error);
     }
-    let action = action_url(&page.url, scan.action.as_deref())?;
-    let fields: Vec<(String, Zeroizing<String>)> = scan
+    let alternative = scan.navigation().map(|_| action.clone());
+    let (posted, mut devices) = match &kind {
+        PageKind::OneTimeCode { devices, .. } => (
+            OTP_POSTED,
+            devices.iter().map(|device| device.id.clone()).collect(),
+        ),
+        PageKind::ChooseMethod { .. } => (&[][..], Vec::new()),
+        _ => (LOGIN_POSTED, Vec::new()),
+    };
+    let mut fields: Vec<(String, Zeroizing<String>)> = primary
         .controls
         .iter()
         // A browser submits a radio or checkbox only when it is selected.
@@ -90,6 +116,12 @@ pub(crate) fn extract(page: &Page) -> Result<(PageKind, Form)> {
         })
         .map(|control| (control.name.clone(), Zeroizing::new(control.value.clone())))
         .collect();
+    if !methods.is_empty() {
+        fields.push((
+            "authenticationExecution".into(),
+            Zeroizing::new(String::new()),
+        ));
+    }
     // With a single device the page offers no choice, but keycloak.v2 still posts that device's
     // ID in a hidden field; only that ID may be posted.
     if devices.is_empty() {
@@ -105,8 +137,21 @@ pub(crate) fn extract(page: &Page) -> Result<(PageKind, Form)> {
             action,
             fields,
             devices,
+            methods,
+            alternative,
         },
     ))
+}
+
+fn check_method(form: &ScannedForm) -> Result<()> {
+    if !form
+        .method
+        .as_deref()
+        .is_some_and(|method| method.eq_ignore_ascii_case("post"))
+    {
+        return Err(Error::Protocol("login form must use POST"));
+    }
+    Ok(())
 }
 
 /// Resolve and check the form's `action`: HTTPS on the page's own site, Keycloak's
@@ -161,6 +206,23 @@ fn check_action(page: &Url, action: &Url) -> Result<()> {
 }
 
 impl Form {
+    pub(crate) fn can_try_another_way(&self) -> bool {
+        self.alternative.is_some()
+    }
+
+    pub(crate) async fn try_another_way(
+        &self,
+        transport: &dyn HttpTransport,
+        jar: &mut CookieJar,
+        deadline: Instant,
+    ) -> Result<Fetched> {
+        let action = self
+            .alternative
+            .as_ref()
+            .ok_or(Error::Protocol("another method is not offered by the page"))?;
+        post(transport, jar, action, &[("tryAnotherWay", "on")], deadline).await
+    }
+
     /// Post the form with `answers` filled in. Each answer must name a field the page has, at
     /// most once, and a chosen device must be one the page offers; otherwise nothing is sent.
     /// `deadline` is the login's time limit (`AuthFlow::deadline`): a retry is never sent after
@@ -183,6 +245,18 @@ impl Form {
             {
                 return Err(Error::Protocol("device not offered by the page"));
             }
+            if *name == "authenticationExecution"
+                && !self.methods.iter().any(|method| method == value)
+            {
+                return Err(Error::Protocol("method not offered by the page"));
+            }
+        }
+        if !self.methods.is_empty()
+            && !answers
+                .iter()
+                .any(|(name, _)| *name == "authenticationExecution")
+        {
+            return Err(Error::Protocol("method choice is missing"));
         }
         let values: Vec<(&str, &str)> = self
             .fields
@@ -195,23 +269,31 @@ impl Form {
                 (name.as_str(), answer.unwrap_or(value.as_str()))
             })
             .collect();
-        match fetch::post_form_before(transport, jar, self.action.clone(), &values, deadline).await
-        {
-            // The form never reached Keycloak, so sending it once more cannot count a second
-            // attempt or replay the session code. Any other failure may have reached it.
-            Err(Error::Unreachable(_)) => {
-                tokio::time::sleep(RETRY_DELAY).await;
-                // The answers must never reach Keycloak after the login has expired.
-                if Instant::now() >= deadline {
-                    return Err(Error::Expired);
-                }
-                // The transport also stops at the deadline, so a retry delayed by waiting for a
-                // free slot or by connecting is never sent late either.
-                fetch::post_form_before(transport, jar, self.action.clone(), &values, deadline)
-                    .await
+        post(transport, jar, &self.action, &values, deadline).await
+    }
+}
+
+async fn post(
+    transport: &dyn HttpTransport,
+    jar: &mut CookieJar,
+    action: &Url,
+    values: &[(&str, &str)],
+    deadline: Instant,
+) -> Result<Fetched> {
+    match fetch::post_form_before(transport, jar, action.clone(), values, deadline).await {
+        // The form never reached Keycloak, so sending it once more cannot count a second
+        // attempt or replay the session code. Any other failure may have reached it.
+        Err(Error::Unreachable(_)) => {
+            tokio::time::sleep(RETRY_DELAY).await;
+            // The answers must never reach Keycloak after the login has expired.
+            if Instant::now() >= deadline {
+                return Err(Error::Expired);
             }
-            sent => sent,
+            // The transport also stops at the deadline, so a retry delayed by waiting for a
+            // free slot or by connecting is never sent late either.
+            fetch::post_form_before(transport, jar, action.clone(), values, deadline).await
         }
+        sent => sent,
     }
 }
 
@@ -219,6 +301,9 @@ impl Drop for Form {
     fn drop(&mut self) {
         // The action's query carries the session code.
         fetch::scrub_url(&mut self.action);
+        if let Some(action) = &mut self.alternative {
+            fetch::scrub_url(action);
+        }
     }
 }
 
@@ -264,6 +349,18 @@ mod tests {
     const V2_OTP: &str = include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-otp.html");
     const V2_DEVICES: &str =
         include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-otp-devices.html");
+    const BASE_METHODS: &str =
+        include_str!("../../tests/fixtures/keycloak/base/select-authenticator.html");
+    const V2_METHODS: &str =
+        include_str!("../../tests/fixtures/keycloak/keycloak.v2/select-authenticator.html");
+    const NIGHTLY_METHODS: &str =
+        include_str!("../../tests/fixtures/keycloak/nightly/select-authenticator.html");
+    const NAVIGATION_PAGES: &[&str] = &[
+        include_str!("../../tests/fixtures/keycloak/base/login-try-another-way.html"),
+        include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-try-another-way.html"),
+        include_str!("../../tests/fixtures/keycloak/base/login-otp-try-another-way.html"),
+        include_str!("../../tests/fixtures/keycloak/keycloak.v2/login-otp-try-another-way.html"),
+    ];
 
     const PAGE_URL: &str =
         "https://keycloak.test:8443/realms/himmelcloak-test/protocol/openid-connect/auth";
@@ -633,5 +730,174 @@ mod tests {
             format!("{:?}", form(V2_DEVICES)),
             format!(r#"Form {{ action: {ACTION}, fields: ["selectedCredentialId", "otp"], .. }}"#)
         );
+    }
+
+    #[tokio::test]
+    async fn method_selection_posts_only_the_chosen_execution() {
+        for html in [BASE_METHODS, V2_METHODS, NIGHTLY_METHODS] {
+            for chosen in ["password-execution", "otp-execution"] {
+                let (kind, form) = extract(&page(html)).unwrap();
+                assert!(matches!(kind, PageKind::ChooseMethod { .. }));
+                assert!(!form.can_try_another_way());
+                let (result, recorder) =
+                    submit(&form, &[("authenticationExecution", chosen)]).await;
+                assert!(result.is_ok());
+                let sent = recorder.sent.into_inner().unwrap();
+                assert_eq!(sent.len(), 1);
+                assert_eq!(
+                    sent[0].1,
+                    [("authenticationExecution".into(), chosen.into())]
+                );
+                assert!(sent[0]
+                    .0
+                    .query_pairs()
+                    .any(|(name, value)| { name == "execution" && value == "FIXTURE" }));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_missing_and_repeated_method_choices_send_nothing() {
+        for html in [BASE_METHODS, V2_METHODS, NIGHTLY_METHODS] {
+            for (answers, reason) in [
+                (
+                    &[("authenticationExecution", "unknown")][..],
+                    "method not offered by the page",
+                ),
+                (
+                    &[("authenticationExecution", "")][..],
+                    "method not offered by the page",
+                ),
+                (&[][..], "method choice is missing"),
+                (
+                    &[
+                        ("authenticationExecution", "password-execution"),
+                        ("authenticationExecution", "otp-execution"),
+                    ][..],
+                    "repeated answer",
+                ),
+                (
+                    &[("password", "secret")][..],
+                    "answer for a field the page does not have",
+                ),
+            ] {
+                let (result, recorder) = submit(&form(html), answers).await;
+                assert_eq!(result.err(), Some(Error::Protocol(reason)));
+                assert!(recorder.sent.into_inner().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn another_way_posts_only_the_auxiliary_form_with_the_login_deadline() {
+        for html in NAVIGATION_PAGES {
+            let form = form(html);
+            assert!(form.can_try_another_way());
+            let recorder = Recorder::default();
+            let deadline = later();
+            let result = form
+                .try_another_way(&recorder, &mut CookieJar::default(), deadline)
+                .await;
+            assert!(result.is_ok());
+            let sent = recorder.sent.into_inner().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0].0, form.action);
+            assert_eq!(sent[0].1, [("tryAnotherWay".into(), "on".into())]);
+            assert_eq!(recorder.send_by.into_inner().unwrap(), vec![Some(deadline)]);
+            assert!(fields(&form)
+                .iter()
+                .all(|(name, _)| *name != "tryAnotherWay"));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unoffered_alternative_sends_nothing() {
+        for html in [
+            BASE_LOGIN,
+            V2_LOGIN,
+            BASE_OTP,
+            V2_OTP,
+            BASE_METHODS,
+            V2_METHODS,
+            NIGHTLY_METHODS,
+        ] {
+            let form = form(html);
+            assert!(!form.can_try_another_way());
+            let recorder = Recorder::default();
+            let result = form
+                .try_another_way(&recorder, &mut CookieJar::default(), later())
+                .await;
+            assert_eq!(
+                result.err(),
+                Some(Error::Protocol("another method is not offered by the page"))
+            );
+            assert!(recorder.sent.into_inner().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn alternative_navigation_retries_only_when_nothing_was_sent() {
+        for (failure, count) in [
+            (Error::Unreachable("refused".into()), 2),
+            (Error::Transport("timed out".into()), 1),
+        ] {
+            let recorder = Recorder {
+                failures: Mutex::new(vec![failure].into()),
+                ..Recorder::default()
+            };
+            let _ = form(NAVIGATION_PAGES[0])
+                .try_another_way(&recorder, &mut CookieJar::default(), later())
+                .await;
+            let sent = recorder.sent.into_inner().unwrap();
+            assert_eq!(sent.len(), count);
+            for (_, fields) in sent {
+                assert_eq!(fields, [("tryAnotherWay".into(), "on".into())]);
+            }
+        }
+    }
+
+    fn with_last_action(html: &str, action: &str) -> String {
+        let start = html.rfind(r#"action=""#).unwrap() + r#"action=""#.len();
+        let end = start + html[start..].find('"').unwrap();
+        format!("{}{action}{}", &html[..start], &html[end..])
+    }
+
+    #[test]
+    fn every_method_and_navigation_action_is_validated_and_bound_to_the_session() {
+        let path = "/realms/himmelcloak-test/login-actions/authenticate";
+        let query = "session_code=FIXTURE&amp;execution=FIXTURE&amp;client_id=himmelcloak-test-client&amp;tab_id=FIXTURE&amp;client_data=FIXTURE";
+        let actions = [
+            format!("https://evil.example{path}?{query}"),
+            format!("http://keycloak.test:8443{path}?{query}"),
+            format!("https://keycloak.test:8443/wrong?{query}"),
+            format!("{path}?execution=FIXTURE&amp;client_id=c&amp;tab_id=d"),
+            format!("{path}?{query}&amp;execution=again"),
+            format!(
+                "{path}?{}",
+                query.replace("session_code=FIXTURE", "session_code=ANOTHER-SESSION")
+            ),
+        ];
+        for html in [V2_METHODS, NIGHTLY_METHODS]
+            .into_iter()
+            .chain(NAVIGATION_PAGES.iter().copied())
+        {
+            for action in &actions {
+                assert!(
+                    extract(&page(&with_last_action(html, action))).is_err(),
+                    "{action}"
+                );
+            }
+            // Only an equivalent relative URL is allowed in the extra form.
+            assert!(extract(&page(&with_last_action(html, &format!("{path}?{query}")))).is_ok());
+            assert_eq!(
+                extract(&page(&html.replacen(
+                    "method=\"post\"",
+                    "method=\"get\"",
+                    1
+                )))
+                .err(),
+                Some(Error::Protocol("login form must use POST")),
+            );
+        }
     }
 }

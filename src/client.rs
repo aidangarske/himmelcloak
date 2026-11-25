@@ -1145,9 +1145,23 @@ mod tests {
     }
 
     const LOGIN_PAGE: &str = include_str!("../tests/fixtures/keycloak/base/login.html");
+    const V2_LOGIN_PAGE: &str = include_str!("../tests/fixtures/keycloak/keycloak.v2/login.html");
     const CODE_PAGE: &str = include_str!("../tests/fixtures/keycloak/base/login-otp-devices.html");
+    #[cfg(feature = "totp")]
+    const V2_CODE_PAGE: &str =
+        include_str!("../tests/fixtures/keycloak/keycloak.v2/login-otp-devices.html");
     const WRONG_PASSWORD_PAGE: &str =
         include_str!("../tests/fixtures/keycloak/keycloak.v2/login-wrong-password.html");
+    const BASE_ALTERNATE_LOGIN: &str =
+        include_str!("../tests/fixtures/keycloak/base/login-try-another-way.html");
+    const V2_ALTERNATE_LOGIN: &str =
+        include_str!("../tests/fixtures/keycloak/keycloak.v2/login-try-another-way.html");
+    const BASE_METHODS: &str =
+        include_str!("../tests/fixtures/keycloak/base/select-authenticator.html");
+    const V2_METHODS: &str =
+        include_str!("../tests/fixtures/keycloak/keycloak.v2/select-authenticator.html");
+    const NIGHTLY_METHODS: &str =
+        include_str!("../tests/fixtures/keycloak/nightly/select-authenticator.html");
     const KEYCLOAK: &str = "https://keycloak.test:8443/realms/himmelcloak-test";
     const FIRST_DEVICE: &str = "00000000-0000-4000-8000-000000000001";
     const SECOND_DEVICE: &str = "00000000-0000-4000-8000-000000000002";
@@ -1284,6 +1298,354 @@ mod tests {
             Ok(_) => panic!("expected a challenge"),
             Err(error) => panic!("expected a challenge, got {error:?}"),
         }
+    }
+
+    #[cfg(feature = "totp")]
+    #[tokio::test]
+    async fn trying_another_way_discards_queued_answers_and_completes_an_otp_login() {
+        for (login, methods_page, otp_page) in [
+            (BASE_ALTERNATE_LOGIN, BASE_METHODS, CODE_PAGE),
+            (V2_ALTERNATE_LOGIN, V2_METHODS, V2_CODE_PAGE),
+            (BASE_ALTERNATE_LOGIN, NIGHTLY_METHODS, CODE_PAGE),
+        ] {
+            let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |flow| {
+                let fixture = nonce_fixture();
+                vec![
+                    page(login),
+                    page(methods_page),
+                    page(otp_page),
+                    redirect(&callback_for(flow)),
+                    reply(200, &token_response(&fixture["token"])),
+                ]
+            });
+            assert!(matches!(
+                challenge(driver::begin(&client, &Builtin, &Start::default(), &mut flow).await),
+                Challenge::Username
+            ));
+            assert!(flow.can_try_another_way());
+            assert!(matches!(
+                challenge(
+                    client
+                        .continue_auth_flow(&mut flow, Answer::Username("abandoned-user".into()))
+                        .await
+                ),
+                Challenge::Password
+            ));
+            assert_eq!(sent(&endpoint).len(), 1);
+            let state = flow.oauth_state().to_owned();
+            let nonce = flow.nonce().to_owned();
+            let verifier = flow.pkce_verifier().to_owned();
+            let deadline = flow.deadline();
+            let bound_client = flow.client.clone();
+
+            let Challenge::ChooseMethod { methods } = challenge(
+                client
+                    .continue_auth_flow(&mut flow, Answer::TryAnotherWay)
+                    .await,
+            ) else {
+                panic!("trying another way must present the server's methods");
+            };
+            assert_eq!(
+                methods
+                    .iter()
+                    .map(|method| method.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["password-execution", "otp-execution"]
+            );
+            assert!(!flow.can_try_another_way());
+            assert!(flow.is_active());
+            assert_eq!(flow.oauth_state(), state);
+            assert_eq!(flow.nonce(), nonce);
+            assert_eq!(flow.pkce_verifier(), verifier);
+            assert_eq!(flow.deadline(), deadline);
+            assert_eq!(flow.client, bound_client);
+            assert!(matches!(
+                challenge(
+                    client
+                        .continue_auth_flow(&mut flow, Answer::ChooseMethod("otp-execution".into()))
+                        .await
+                ),
+                Challenge::OneTimeCode { .. }
+            ));
+            let Ok(AuthStep::Complete(tokens)) = client
+                .continue_auth_flow(&mut flow, code(Some(SECOND_DEVICE)))
+                .await
+            else {
+                panic!("the selected OTP method must complete the login");
+            };
+            assert_eq!(tokens.verified_subject.as_deref(), Some("alice"));
+            let requests = sent(&endpoint);
+            assert_eq!(requests.len(), 5);
+            assert_eq!(requests[1].1, "tryAnotherWay=on");
+            assert_eq!(requests[2].1, "authenticationExecution=otp-execution");
+            let otp = posted(&requests[3].1);
+            assert_eq!(otp.len(), 2);
+            assert_eq!(otp["otp"], "123456");
+            assert_eq!(otp["selectedCredentialId"], SECOND_DEVICE);
+            assert_eq!(posted(&requests[4].1)["code"], "synthetic-code");
+            assert!(!flow.can_try_another_way());
+            assert!(flow.pending.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn choosing_password_starts_with_fresh_answers_for_the_selected_page() {
+        for (login, methods_page, password_page) in [
+            (BASE_ALTERNATE_LOGIN, BASE_METHODS, LOGIN_PAGE),
+            (V2_ALTERNATE_LOGIN, V2_METHODS, V2_LOGIN_PAGE),
+            (BASE_ALTERNATE_LOGIN, NIGHTLY_METHODS, LOGIN_PAGE),
+        ] {
+            let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |flow| {
+                let fixture = nonce_fixture();
+                vec![
+                    page(login),
+                    page(methods_page),
+                    page(password_page),
+                    redirect(&callback_for(flow)),
+                    reply(200, &token_response(&fixture["token"])),
+                ]
+            });
+            driver::begin(&client, &Builtin, &Start::default(), &mut flow)
+                .await
+                .unwrap();
+            client
+                .continue_auth_flow(&mut flow, Answer::Username("abandoned-user".into()))
+                .await
+                .unwrap();
+            assert!(matches!(
+                challenge(
+                    client
+                        .continue_auth_flow(&mut flow, Answer::TryAnotherWay)
+                        .await
+                ),
+                Challenge::ChooseMethod { .. }
+            ));
+            assert!(matches!(
+                challenge(
+                    client
+                        .continue_auth_flow(
+                            &mut flow,
+                            Answer::ChooseMethod("password-execution".into()),
+                        )
+                        .await
+                ),
+                Challenge::Username
+            ));
+            assert!(!flow.can_try_another_way());
+            assert!(matches!(
+                challenge(
+                    client
+                        .continue_auth_flow(&mut flow, Answer::Username("alice".into()))
+                        .await
+                ),
+                Challenge::Password
+            ));
+            let Ok(AuthStep::Complete(tokens)) = client
+                .continue_auth_flow(&mut flow, Answer::Password("new-password".into()))
+                .await
+            else {
+                panic!("the selected password method must complete the login");
+            };
+            assert_eq!(tokens.verified_subject.as_deref(), Some("alice"));
+            let requests = sent(&endpoint);
+            assert_eq!(requests.len(), 5);
+            assert_eq!(requests[1].1, "tryAnotherWay=on");
+            assert_eq!(requests[2].1, "authenticationExecution=password-execution");
+            let login = posted(&requests[3].1);
+            assert_eq!(login.len(), 3);
+            assert_eq!(login["username"], "alice");
+            assert_eq!(login["password"], "new-password");
+            assert_eq!(login["credentialId"], "");
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_and_stale_method_ids_are_rejected_before_posting() {
+        for stale in [false, true] {
+            let updated = BASE_METHODS.replace("otp-execution", "new-otp-execution");
+            let (client, endpoint, mut flow) = keycloak(DEFAULT_LOGIN_TIMEOUT, |_| {
+                let mut responses = vec![page(BASE_ALTERNATE_LOGIN), page(BASE_METHODS)];
+                if stale {
+                    responses.extend([page(BASE_ALTERNATE_LOGIN), page(&updated)]);
+                }
+                responses
+            });
+            driver::begin(&client, &Builtin, &Start::default(), &mut flow)
+                .await
+                .unwrap();
+            client
+                .continue_auth_flow(&mut flow, Answer::TryAnotherWay)
+                .await
+                .unwrap();
+            if stale {
+                client
+                    .continue_auth_flow(
+                        &mut flow,
+                        Answer::ChooseMethod("password-execution".into()),
+                    )
+                    .await
+                    .unwrap();
+                client
+                    .continue_auth_flow(&mut flow, Answer::TryAnotherWay)
+                    .await
+                    .unwrap();
+            }
+            let before = sent(&endpoint).len();
+            let method = if stale {
+                "otp-execution"
+            } else {
+                "unknown-execution"
+            };
+            assert_eq!(
+                client
+                    .continue_auth_flow(&mut flow, Answer::ChooseMethod(method.into()))
+                    .await
+                    .err(),
+                Some(Error::Protocol("method not offered"))
+            );
+            assert_eq!(sent(&endpoint).len(), before);
+            assert!(!flow.is_active());
+            assert!(flow.pending.is_none() && flow.jar.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn trying_another_way_without_an_advertised_form_never_posts() {
+        for queued_username in [false, true] {
+            let (client, endpoint, mut flow) =
+                keycloak(DEFAULT_LOGIN_TIMEOUT, |_| vec![page(LOGIN_PAGE)]);
+            driver::begin(&client, &Builtin, &Start::default(), &mut flow)
+                .await
+                .unwrap();
+            if queued_username {
+                client
+                    .continue_auth_flow(&mut flow, Answer::Username("alice".into()))
+                    .await
+                    .unwrap();
+            }
+            assert!(!flow.can_try_another_way());
+            assert!(matches!(
+                client
+                    .continue_auth_flow(&mut flow, Answer::TryAnotherWay)
+                    .await,
+                Err(Error::Protocol(_))
+            ));
+            assert_eq!(sent(&endpoint).len(), 1);
+            assert!(flow.pending.is_none() && flow.jar.is_empty());
+            assert!(!flow.is_active());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_or_expired_navigation_cannot_send_another_request() {
+        for expired in [false, true] {
+            let (client, endpoint, mut flow) =
+                keycloak(DEFAULT_LOGIN_TIMEOUT, |_| vec![page(BASE_ALTERNATE_LOGIN)]);
+            driver::begin(&client, &Builtin, &Start::default(), &mut flow)
+                .await
+                .unwrap();
+            assert!(flow.can_try_another_way());
+            let expected = if expired {
+                let mut ended = AuthFlow::new(Duration::ZERO).unwrap();
+                ended.pending = flow.pending.take();
+                ended.client = flow.client.clone();
+                flow = ended;
+                Error::Expired
+            } else {
+                flow.cancel();
+                Error::Cancelled
+            };
+            assert_eq!(
+                client
+                    .continue_auth_flow(&mut flow, Answer::TryAnotherWay)
+                    .await
+                    .err(),
+                Some(expected)
+            );
+            assert!(!flow.can_try_another_way());
+            assert_eq!(sent(&endpoint).len(), 1);
+            assert!(flow.pending.is_none() && flow.jar.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn another_client_cannot_navigate_a_login_to_its_own_method_page() {
+        let (client, endpoint, mut flow) =
+            keycloak(DEFAULT_LOGIN_TIMEOUT, |_| vec![page(BASE_ALTERNATE_LOGIN)]);
+        driver::begin(&client, &Builtin, &Start::default(), &mut flow)
+            .await
+            .unwrap();
+        assert!(flow.can_try_another_way());
+        let (mut other, other_endpoint) = token_app(json!({}), Vec::new());
+        other.config.client_id = "another-client".into();
+        assert_eq!(
+            other
+                .continue_auth_flow(&mut flow, Answer::TryAnotherWay)
+                .await
+                .err(),
+            Some(Error::Protocol("login flow belongs to another client"))
+        );
+        assert_eq!(sent(&endpoint).len(), 1);
+        assert!(sent(&other_endpoint).is_empty());
+        assert!(!flow.can_try_another_way());
+        assert!(flow.pending.is_none() && flow.jar.is_empty());
+    }
+
+    struct StalledNavigation(Arc<TokenEndpoint>);
+
+    impl HttpTransport for StalledNavigation {
+        fn send(
+            &self,
+            request: Request,
+        ) -> Pin<Box<dyn Future<Output = Result<Response>> + Send + '_>> {
+            if matches!(request.method, Method::Post) {
+                self.0.sent.lock().unwrap().push((
+                    request.url.to_string(),
+                    String::from_utf8(request.body.clone()).unwrap(),
+                ));
+                Box::pin(std::future::pending())
+            } else {
+                self.0.send(request)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_an_inflight_navigation_fails_the_login_and_discards_its_answers() {
+        let (client, endpoint, mut flow) =
+            keycloak(DEFAULT_LOGIN_TIMEOUT, |_| vec![page(BASE_ALTERNATE_LOGIN)]);
+        let mut stalled = app_with(
+            nonce_fixture()["jwk"].clone(),
+            Arc::new(StalledNavigation(endpoint.clone())),
+        );
+        stalled.metadata = client.metadata.clone();
+        driver::begin(&stalled, &Builtin, &Start::default(), &mut flow)
+            .await
+            .unwrap();
+        stalled
+            .continue_auth_flow(&mut flow, Answer::Username("abandoned-user".into()))
+            .await
+            .unwrap();
+        let navigation = stalled.continue_auth_flow(&mut flow, Answer::TryAnotherWay);
+        assert!(tokio::time::timeout(Duration::from_millis(10), navigation)
+            .await
+            .is_err());
+        assert_eq!(sent(&endpoint).len(), 2);
+        assert_eq!(sent(&endpoint)[1].1, "tryAnotherWay=on");
+        assert_eq!(
+            flow.ensure_active().err(),
+            Some(Error::Protocol("login flow failed"))
+        );
+        assert!(flow.pending.is_none() && flow.jar.is_empty());
+        assert!(!flow.can_try_another_way());
+        assert_eq!(
+            stalled
+                .continue_auth_flow(&mut flow, Answer::TryAnotherWay)
+                .await
+                .err(),
+            Some(Error::Protocol("login flow failed"))
+        );
+        assert_eq!(sent(&endpoint).len(), 2);
     }
 
     #[tokio::test]
