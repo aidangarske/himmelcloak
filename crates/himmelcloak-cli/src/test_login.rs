@@ -21,7 +21,7 @@
 
 use himmelcloak::config::Config;
 use himmelcloak::{
-    Answer, AuthMethod, AuthStep, Challenge, OtpDevice, PublicClientApplication, Start,
+    Answer, AuthFlow, AuthMethod, AuthStep, Challenge, OtpDevice, PublicClientApplication, Start,
 };
 use serde::Deserialize;
 use std::io::{self, Write};
@@ -286,10 +286,49 @@ async fn login(config: Config) -> LoginResult<()> {
         .await
         .map_err(|_| "cannot connect to Keycloak")?;
 
-    let (mut flow, mut step) = client
+    let (flow, step) = client
         .initiate_auth_flow(Start::default())
         .await
         .map_err(|error| start_error(&error))?;
+
+    conversation(&mut KeycloakLogin { client, flow }, step).await
+}
+
+/// Keep the interactive loop testable with scripted client replies and real terminal input.
+trait LoginSession {
+    fn is_active(&mut self) -> bool;
+    fn can_try_another_way(&mut self) -> bool;
+    fn cancel(&mut self);
+    async fn advance(&mut self, answer: Answer) -> LoginResult<AuthStep>;
+}
+
+struct KeycloakLogin {
+    client: PublicClientApplication,
+    flow: AuthFlow,
+}
+
+impl LoginSession for KeycloakLogin {
+    fn is_active(&mut self) -> bool {
+        self.flow.is_active()
+    }
+
+    fn can_try_another_way(&mut self) -> bool {
+        self.flow.can_try_another_way()
+    }
+
+    fn cancel(&mut self) {
+        self.flow.cancel();
+    }
+
+    async fn advance(&mut self, answer: Answer) -> LoginResult<AuthStep> {
+        self.client
+            .continue_auth_flow(&mut self.flow, answer)
+            .await
+            .map_err(|_| "login failed")
+    }
+}
+
+async fn conversation(session: &mut impl LoginSession, mut step: AuthStep) -> LoginResult<()> {
     let mut password_submitted = false;
     let mut code_submitted = false;
 
@@ -299,19 +338,19 @@ async fn login(config: Config) -> LoginResult<()> {
             AuthStep::Failed { .. } => return Err("login failed"),
             AuthStep::Challenge(challenge) => challenge,
             _ => {
-                flow.cancel();
+                session.cancel();
                 return Err("unsupported login step");
             }
         };
-        if !flow.is_active() {
+        if !session.is_active() {
             return Err("login failed");
         }
-        let offered = flow.can_try_another_way();
+        let offered = session.can_try_another_way();
         let offer_switch =
             match offer_method_switch(&challenge, password_submitted, code_submitted, offered) {
                 Ok(offered) => offered,
                 Err(error) => {
-                    flow.cancel();
+                    session.cancel();
                     return Err(error);
                 }
             };
@@ -319,7 +358,7 @@ async fn login(config: Config) -> LoginResult<()> {
             Answer::TryAnotherWay
         } else {
             // Time spent choosing a method must not lead to a secret prompt after expiry.
-            if !flow.is_active() {
+            if !session.is_active() {
                 return Err("login failed");
             }
             match challenge {
@@ -334,7 +373,7 @@ async fn login(config: Config) -> LoginResult<()> {
                 }
                 Challenge::OneTimeCode { devices } => {
                     let device = choose_device(&devices)?;
-                    if !flow.is_active() {
+                    if !session.is_active() {
                         return Err("login failed");
                     }
                     let mut code = read_input("One-time code: ", true)?;
@@ -347,16 +386,13 @@ async fn login(config: Config) -> LoginResult<()> {
                 }
                 Challenge::ChooseMethod { methods } => choose_method(&methods)?,
                 _ => {
-                    flow.cancel();
+                    session.cancel();
                     return Err("this command supports password and one-time-code login only");
                 }
             }
         };
 
-        step = client
-            .continue_auth_flow(&mut flow, answer)
-            .await
-            .map_err(|_| "login failed")?;
+        step = session.advance(answer).await?;
     }
 }
 
@@ -651,6 +687,10 @@ ca_bundle = "/work/tests/keycloak/.generated/ca.pem"
     }
 }
 #[cfg(test)]
+#[path = "test_login_method_switch_tests.rs"]
+mod method_switch_tests;
+
+#[cfg(test)]
 mod terminal_tests {
     use std::{
         fs::File,
@@ -664,7 +704,7 @@ mod terminal_tests {
 
     const SECRET: &str = "synthetic-terminal-test-password";
 
-    struct ChildGuard(Child);
+    pub(super) struct ChildGuard(pub(super) Child);
 
     impl Drop for ChildGuard {
         fn drop(&mut self) {
@@ -673,7 +713,7 @@ mod terminal_tests {
         }
     }
 
-    fn settings(file: &File) -> libc::termios {
+    pub(super) fn settings(file: &File) -> libc::termios {
         let mut value = std::mem::MaybeUninit::<libc::termios>::uninit();
         // SAFETY: value points to writable storage for terminal settings.
         assert_eq!(
@@ -685,7 +725,7 @@ mod terminal_tests {
         unsafe { value.assume_init() }
     }
 
-    fn terminal_pair() -> (File, File) {
+    pub(super) fn terminal_pair() -> (File, File) {
         let mut master = -1;
         let mut slave = -1;
         // SAFETY: descriptor pointers are valid; optional arguments are null.
@@ -706,7 +746,7 @@ mod terminal_tests {
         unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) }
     }
 
-    fn read_available(master: &mut File, output: &mut Vec<u8>) {
+    pub(super) fn read_available(master: &mut File, output: &mut Vec<u8>) {
         let mut descriptor = libc::pollfd {
             fd: master.as_raw_fd(),
             events: libc::POLLIN,

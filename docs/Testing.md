@@ -104,8 +104,13 @@ the chooser, select a password or OTP method, and complete the login with
 verified tokens through the existing handlers. They check exact request bodies,
 preserved login state, unknown and stale execution IDs, malformed forms,
 session/action binding, and refused navigation after expiry or cancellation.
-CLI tests cover numbered method menus and switching without resetting attempt
-limits.
+CLI pseudo-terminal tests in `crates/himmelcloak-cli/src/test_login_method_switch_tests.rs`
+run the production conversation loop with scripted client replies during normal
+`cargo test`. They enter a username, request another way, choose an offered
+password or OTP method, and complete it while checking prompt order, the exact
+submitted answers, and hidden input. Separate conversations switch back to an
+already submitted factor and verify that no second secret or navigation prompt
+appears and the login is cancelled.
 
 The disposable `himmelcloak-method-choice` client uses a separate flow with
 password followed by enrolled OTP/WebAuthn alternatives. Its `method-choice`
