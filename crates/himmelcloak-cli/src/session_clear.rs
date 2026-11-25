@@ -56,7 +56,48 @@ pub fn run(path: &Path) -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_settings;
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{Duration, SystemTime},
+    };
+
+    use himmelcloak::{cache::TokenCache, flow::Tokens};
+
+    use super::{parse_settings, run};
+
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    struct TemporaryDirectory(PathBuf);
+
+    impl TemporaryDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "himmelcloak-clear-state-{}-{}",
+                std::process::id(),
+                NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TemporaryDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tokens() -> Tokens {
+        let mut tokens = Tokens::default();
+        tokens.access_token = "test-access-token".to_owned();
+        tokens.refresh_token = Some("test-refresh-token".to_owned());
+        tokens.id_token = Some("test-id-token".to_owned());
+        tokens
+    }
 
     const VALID: &str = "[session]\nusername = 'alice'\ncache_directory = '/var/lib/himmelcloak/tokens'\nkey_file = '/etc/himmelcloak/token.key'\n";
 
@@ -81,5 +122,59 @@ mod tests {
             parse_settings(&VALID.replace("/etc/himmelcloak/token.key", "relative/key")).is_err()
         );
         assert!(parse_settings(&format!("{VALID}password = 'DO-NOT-PRINT-SECRET'\n")).is_err());
+    }
+
+    #[test]
+    fn clears_an_existing_cached_session() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+
+        let directory = TemporaryDirectory::new();
+        let cache_directory = directory.0.join("cache");
+        let key_file = directory.0.join("token.key");
+        let cache = TokenCache::open(&cache_directory, &key_file).unwrap();
+        cache
+            .store(
+                "alice",
+                &tokens(),
+                SystemTime::now() + Duration::from_secs(60),
+            )
+            .unwrap();
+
+        let config = directory.0.join("himmelcloak.toml");
+        fs::write(
+            &config,
+            format!(
+                "[session]\nusername = \"alice\"\ncache_directory = \"{}\"\nkey_file = \"{}\"\n",
+                cache_directory.display(),
+                key_file.display()
+            ),
+        )
+        .unwrap();
+
+        run(&config).unwrap();
+        assert!(cache.load("alice").unwrap().is_none());
+    }
+
+    #[test]
+    fn clearing_does_not_create_missing_session_state() {
+        let directory = TemporaryDirectory::new();
+        let cache_directory = directory.0.join("missing-cache");
+        let key_file = directory.0.join("missing.key");
+        let config = directory.0.join("himmelcloak.toml");
+        fs::write(
+            &config,
+            format!(
+                "[session]\nusername = \"alice\"\ncache_directory = \"{}\"\nkey_file = \"{}\"\n",
+                cache_directory.display(),
+                key_file.display()
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(run(&config), Err("configured session cache does not exist"));
+        assert!(!cache_directory.exists());
+        assert!(!key_file.exists());
     }
 }
