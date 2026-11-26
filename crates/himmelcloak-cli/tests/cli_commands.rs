@@ -194,3 +194,18 @@ fn test_login_rejects_an_unavailable_server_without_leaking_settings() {
     assert_no_secret(&output);
     assert!(!String::from_utf8_lossy(&output.stderr).contains(&address.to_string()));
 }
+#[test]
+fn malformed_configuration_errors_do_not_leak_source_values() {
+    let directory = WorkDir::new();
+
+    for arguments in [vec!["config", "check"], vec!["test-login"]] {
+        directory.config(&format!("password = '{SECRET}' unexpected\n"));
+
+        let output = directory.run(&arguments);
+
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(!output.stderr.is_empty());
+        assert_no_secret(&output);
+    }
+}
