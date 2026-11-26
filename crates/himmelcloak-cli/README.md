@@ -48,3 +48,39 @@ that do not echo sensitive configuration values.
 A live terminal test against the latest Keycloak image must also confirm
 successful fixture-user login and that neither the password nor tokens
 appear in command output.
+
+## Clear session state
+
+`himmelcloak-cli clear-state` removes one user's existing encrypted
+TokenCache entry. It reads `himmelcloak.toml` from the current working
+directory.
+
+Add the following settings, using the username and absolute paths for
+your existing cache:
+
+```toml
+[session]
+username = "alice"
+cache_directory = "/var/lib/himmelcloak/tokens"
+key_file = "/etc/himmelcloak/token.key"
+```
+
+Run with the privileges required to access the root-owned cache:
+
+```bash
+sudo ./target/debug/himmelcloak-cli clear-state
+```
+
+Build the binary first if needed:
+
+```bash
+scripts/with-native.sh cargo build --locked -p himmelcloak-cli
+```
+
+The command removes only the configured user's cache entry. It does not
+delete the encryption key or other users' entries. Missing cache or key
+paths cause an error rather than creating new state.
+
+This clears local cached state; it does not revoke sessions in Keycloak.
+The `test-login` command remains stateless: it neither saves nor restores
+tokens, and each invocation starts a new authentication flow.
