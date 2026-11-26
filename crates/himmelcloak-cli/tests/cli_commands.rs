@@ -141,3 +141,56 @@ fn test_login_rejects_unknown_secret_fields_without_leaking_them() {
     );
     assert_no_secret(&output);
 }
+#[test]
+fn test_login_rejects_an_unavailable_server_without_leaking_settings() {
+    use std::{
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    let directory = WorkDir::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    // Accept and immediately close connections: no working HTTPS/Keycloak
+    // service exists here. No external network or live fixture is required.
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut accepted = false;
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((connection, _)) => {
+                    accepted = true;
+                    drop(connection);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+        accepted
+    });
+
+    directory.config(&format!(
+        "[login]\n\
+         server_url = 'https://{address}'\n\
+         realm = '{SECRET}'\n\
+         client_id = 'hc81-test-client'\n"
+    ));
+
+    let output = directory.run(&["test-login"]);
+    let connected = server.join().expect("join unavailable-server fixture");
+
+    assert!(connected, "CLI must attempt to reach the configured server");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim_end(),
+        "himmelcloak-cli: cannot connect to Keycloak"
+    );
+    assert_no_secret(&output);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(&address.to_string()));
+}
