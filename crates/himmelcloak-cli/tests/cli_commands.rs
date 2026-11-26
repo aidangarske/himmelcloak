@@ -209,3 +209,57 @@ fn malformed_configuration_errors_do_not_leak_source_values() {
         assert_no_secret(&output);
     }
 }
+
+fn assert_sync_failure(output: &Output, root_message: &str) {
+    // SAFETY: geteuid takes no arguments and has no preconditions.
+    let is_root = unsafe { libc::geteuid() } == 0;
+    let message = if is_root {
+        root_message
+    } else {
+        "sync-users must run as root"
+    };
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim_end(),
+        format!("himmelcloak-cli: sync-users: {message}")
+    );
+    assert_no_secret(output);
+}
+
+#[test]
+fn sync_users_rejects_missing_configuration() {
+    let directory = WorkDir::new();
+    let output = directory.run(&["sync-users"]);
+
+    assert_sync_failure(&output, "cannot open sync configuration or secret file");
+}
+
+#[test]
+fn sync_users_rejects_malformed_configuration_without_leaking_values() {
+    let directory = WorkDir::new();
+    directory.config(&format!("password = '{SECRET}' unexpected\n"));
+
+    let output = directory.run(&["sync-users"]);
+
+    assert_sync_failure(&output, "malformed sync configuration");
+}
+
+#[test]
+fn sync_users_rejects_unknown_secret_fields_without_leaking_values() {
+    let directory = WorkDir::new();
+    directory.config(&format!(
+        "[sync]\n\
+         server_url = 'https://keycloak.example.invalid'\n\
+         realm = 'test'\n\
+         client_id = 'test-client'\n\
+         allowed_group_id = 'test-group'\n\
+         client_secret_file = '/nonexistent/hc81-secret'\n\
+         password = '{SECRET}'\n"
+    ));
+
+    let output = directory.run(&["sync-users"]);
+
+    assert_sync_failure(&output, "invalid [sync] settings");
+}
