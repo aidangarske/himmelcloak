@@ -65,10 +65,22 @@ cache_directory = "/var/lib/himmelcloak/tokens"
 key_file = "/etc/himmelcloak/token.key"
 ```
 
-Run with the privileges required to access the root-owned cache:
+The configuration must be a root-owned regular file, must not be a
+symlink, and must not be writable by group or others. Its maximum size
+is 64 KiB. Running with `sudo` does not change the file's ownership.
+
+On the target Linux system, review the configuration and ensure it is
+in a trusted directory before setting its ownership and permissions:
 
 ```bash
-sudo ./target/debug/himmelcloak-cli clear-state
+sudo chown root:root himmelcloak.toml
+sudo chmod 0600 himmelcloak.toml
+```
+
+Then run the built binary from that directory:
+
+```bash
+sudo /absolute/path/to/target/debug/himmelcloak-cli clear-state
 ```
 
 Build the binary first if needed:

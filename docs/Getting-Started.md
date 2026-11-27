@@ -33,9 +33,17 @@ cargo run --locked -p himmelcloak-cli -- sync-users
 cargo run --locked -p himmelcloak-cli -- clear-state
 ```
 
-`config check` validates TOML syntax only. `clear-state` remains a placeholder.
-`test-login` runs an interactive native password and one-time-code login. `sync-users` reads the
-configured group as described below.
+`config check` validates TOML syntax only.
+`test-login` runs an interactive native password and one-time-code login.
+`sync-users` reads the configured group as described below.
+`clear-state` removes only the explicitly configured user's existing
+encrypted session-cache entry, preserving the encryption key and other
+users' entries. It does not create missing cache or key paths or revoke
+Keycloak sessions. `test-login` remains stateless.
+
+See [Clear session state](../crates/himmelcloak-cli/README.md#clear-session-state)
+for the required `[session]` settings, root-owned configuration requirements,
+and invocation instructions.
 
 ### Test login
 
