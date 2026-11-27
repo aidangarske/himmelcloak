@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn clears_an_existing_cached_session() {
+    fn clears_only_the_selected_session_and_preserves_the_key() {
         if unsafe { libc::geteuid() } != 0 {
             return;
         }
@@ -167,13 +167,18 @@ mod tests {
         let cache_directory = directory.0.join("cache");
         let key_file = directory.0.join("token.key");
         let cache = TokenCache::open(&cache_directory, &key_file).unwrap();
-        cache
-            .store(
-                "alice",
-                &tokens(),
-                SystemTime::now() + Duration::from_secs(60),
-            )
-            .unwrap();
+        let expires = SystemTime::now() + Duration::from_secs(3600);
+
+        cache.store("alice", &tokens(), expires).unwrap();
+
+        let mut bob = tokens();
+        bob.access_token = "bob-access-token".to_owned();
+        bob.refresh_token = Some("bob-refresh-token".to_owned());
+        bob.id_token = Some("bob-id-token".to_owned());
+        cache.store("bob", &bob, expires).unwrap();
+
+        let key_before = fs::read(&key_file).unwrap();
+        drop(cache);
 
         let config = directory.0.join("himmelcloak.toml");
         fs::write(
@@ -185,9 +190,24 @@ mod tests {
             ),
         )
         .unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
 
         run(&config).unwrap();
-        assert!(cache.load("alice").unwrap().is_none());
+
+        assert_eq!(fs::read(&key_file).unwrap(), key_before);
+
+        // Reopen from disk so an in-memory key cannot hide key loss.
+        let reopened = TokenCache::open_existing(&cache_directory, &key_file).unwrap();
+
+        assert!(reopened.load("alice").unwrap().is_none());
+
+        let loaded_bob = reopened.load("bob").unwrap().unwrap();
+        assert_eq!(loaded_bob.access_token, bob.access_token);
+        assert_eq!(loaded_bob.refresh_token, bob.refresh_token);
+        assert_eq!(loaded_bob.id_token, bob.id_token);
+
+        // Only Bob's entry remains; the key lives outside this directory.
+        assert_eq!(fs::read_dir(&cache_directory).unwrap().count(), 1);
     }
     #[test]
     fn clearing_does_not_create_missing_session_state() {
