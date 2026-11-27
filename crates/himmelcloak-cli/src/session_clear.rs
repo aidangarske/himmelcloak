@@ -41,13 +41,8 @@ fn parse_settings(source: &str) -> Result<SessionSettings, &'static str> {
 pub fn run(path: &Path) -> Result<(), &'static str> {
     let source = fs::read_to_string(path).map_err(|_| "cannot read configuration")?;
     let settings = parse_settings(&source)?;
-    // Do not create a new cache or encryption key just to clear a session.
-    if !settings.cache_directory.exists() || !settings.key_file.exists() {
-        return Err("configured session cache does not exist");
-    }
-    // TokenCache enforces root ownership and private permissions and hashes the
-    // username before selecting the one entry to remove.
-    let cache = TokenCache::open(&settings.cache_directory, &settings.key_file)
+    // Opening existing state never creates a missing directory or encryption key.
+    let cache = TokenCache::open_existing(&settings.cache_directory, &settings.key_file)
         .map_err(|_| "cannot open private session cache")?;
     cache
         .remove(&settings.username)
@@ -173,7 +168,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(run(&config), Err("configured session cache does not exist"));
+        assert_eq!(run(&config), Err("cannot open private session cache"));
         assert!(!cache_directory.exists());
         assert!(!key_file.exists());
     }

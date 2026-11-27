@@ -96,7 +96,34 @@ impl TokenCache {
     pub fn open(dir: &Path, key_file: &Path) -> Result<Self> {
         Self::open_owned_by(dir, key_file, ROOT)
     }
+    /// Open an existing cache and key without creating either path.
+    /// Missing, symlinked, incorrectly owned, or unsafe paths are refused.
+    pub fn open_existing(dir: &Path, key_file: &Path) -> Result<Self> {
+        Self::open_existing_owned_by(dir, key_file, ROOT)
+    }
 
+    fn open_existing_owned_by(dir: &Path, key_file: &Path, owner: u32) -> Result<Self> {
+        let directory = open_no_follow(dir).map_err(|_| PRIVATE_DIR)?;
+        let metadata = directory.metadata().map_err(|_| PRIVATE_DIR)?;
+        if !metadata.is_dir() || !private(&metadata, owner) {
+            return Err(PRIVATE_DIR);
+        }
+
+        let key_parent = fs::metadata(parent(key_file)).map_err(|_| PRIVATE_KEY_DIR)?;
+        if !key_parent.is_dir() || key_parent.uid() != owner || key_parent.mode() & WRITE_BITS != 0
+        {
+            return Err(PRIVATE_KEY_DIR);
+        }
+
+        let file = open_no_follow(key_file).map_err(|_| PRIVATE_KEY)?;
+        let key = read_key(file, owner)?;
+
+        Ok(Self {
+            dir: dir.to_owned(),
+            key,
+            owner,
+        })
+    }
     /// `open`, for a cache that must belong to `owner` rather than root. Tests use it to run
     /// without root.
     fn open_owned_by(dir: &Path, key_file: &Path, owner: u32) -> Result<Self> {
@@ -500,7 +527,75 @@ mod tests {
     fn mode(path: &Path) -> u32 {
         fs::symlink_metadata(path).unwrap().mode() & 0o777
     }
+    #[test]
+    fn existing_cache_opens_without_changing_the_key() {
+        let scratch = Scratch::new();
+        scratch
+            .open()
+            .unwrap()
+            .store("alice", &tokens(), in_an_hour())
+            .unwrap();
+        let key = fs::read(scratch.key()).unwrap();
 
+        let cache =
+            TokenCache::open_existing_owned_by(&scratch.dir(), &scratch.key(), scratch.me).unwrap();
+
+        assert_eq!(
+            fields(&cache.load("alice").unwrap().unwrap()),
+            fields(&tokens())
+        );
+        assert_eq!(fs::read(scratch.key()).unwrap(), key);
+        assert_eq!(
+            TokenCache::open_existing(&scratch.dir(), &scratch.key()).is_ok(),
+            scratch.me == 0
+        );
+    }
+
+    #[test]
+    fn existing_open_does_not_create_missing_paths() {
+        let scratch = Scratch::new();
+
+        assert!(
+            TokenCache::open_existing_owned_by(&scratch.dir(), &scratch.key(), scratch.me,)
+                .is_err()
+        );
+
+        assert!(!scratch.dir().exists());
+        assert!(!scratch.key().exists());
+        assert_eq!(fs::read_dir(&scratch.base).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn existing_open_does_not_recreate_a_removed_key() {
+        let scratch = Scratch::new();
+        scratch.open().unwrap();
+        fs::remove_file(scratch.key()).unwrap();
+
+        assert!(
+            TokenCache::open_existing_owned_by(&scratch.dir(), &scratch.key(), scratch.me,)
+                .is_err()
+        );
+
+        assert!(!scratch.key().exists());
+        assert_eq!(fs::read_dir(&scratch.base).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn existing_open_does_not_recreate_a_removed_directory() {
+        let scratch = Scratch::new();
+        scratch.open().unwrap();
+        let key = fs::read(scratch.key()).unwrap();
+        fs::remove_dir(scratch.dir()).unwrap();
+
+        assert!(
+            TokenCache::open_existing_owned_by(&scratch.dir(), &scratch.key(), scratch.me,)
+                .is_err()
+        );
+
+        assert!(!scratch.dir().exists());
+        assert_eq!(fs::read(scratch.key()).unwrap(), key);
+        assert_eq!(fs::read_dir(&scratch.base).unwrap().count(), 1);
+    }
     #[test]
     fn a_saved_session_survives_a_restart() {
         let scratch = Scratch::new();
