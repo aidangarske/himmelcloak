@@ -114,7 +114,24 @@ impl TokenCache {
         {
             return Err(PRIVATE_KEY_DIR);
         }
+        // Entry filenames are lowercase SHA-256 hashes. A key must never occupy
+        // that namespace. Compare directory identities so ancestor aliases
+        // cannot hide an overlap.
+        let entry_name = key_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.len() == 64
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+            });
 
+        if entry_name && key_parent.dev() == metadata.dev() && key_parent.ino() == metadata.ino() {
+            return Err(Error::InvalidConfiguration(
+                "token cache key must not overlap cache entry filenames",
+            ));
+        }
         let file = open_no_follow(key_file).map_err(|_| PRIVATE_KEY)?;
         let key = read_key(file, owner)?;
 
@@ -595,6 +612,48 @@ mod tests {
         assert!(!scratch.dir().exists());
         assert_eq!(fs::read(scratch.key()).unwrap(), key);
         assert_eq!(fs::read_dir(&scratch.base).unwrap().count(), 1);
+    }
+    #[test]
+    fn existing_open_rejects_keys_in_the_entry_namespace_through_aliases() {
+        let scratch = Scratch::new();
+        let name = hex(&crypto::sha256(b"alice").unwrap());
+        let key_path = scratch.dir().join(&name);
+
+        // Reproduce the configuration accepted by the original creating API.
+        let cache = TokenCache::open_owned_by(&scratch.dir(), &key_path, scratch.me).unwrap();
+        let bob = tokens();
+        cache.store("bob", &bob, in_an_hour()).unwrap();
+        drop(cache);
+
+        let key_before = fs::read(&key_path).unwrap();
+        let bob_path = scratch.dir().join(hex(&crypto::sha256(b"bob").unwrap()));
+        let bob_before = fs::read(&bob_path).unwrap();
+
+        // The alias is an ancestor, not the final cache-directory component.
+        let alias = scratch.base.join("alias");
+        std::os::unix::fs::symlink(&scratch.base, &alias).unwrap();
+        let alias_dir = alias.join("cache");
+        let alias_key = alias_dir.join(&name);
+
+        for (dir, key) in [
+            (scratch.dir(), key_path.clone()),
+            (scratch.dir(), alias_key.clone()),
+            (alias_dir.clone(), key_path.clone()),
+            (alias_dir, alias_key),
+        ] {
+            assert!(TokenCache::open_existing_owned_by(&dir, &key, scratch.me).is_err());
+            assert_eq!(fs::read(&key_path).unwrap(), key_before);
+            assert_eq!(fs::read(&bob_path).unwrap(), bob_before);
+        }
+
+        // Reopen the original configuration to prove Bob remains decryptable.
+        // Only this test uses the old API to inspect the rejected layout.
+        let reopened = TokenCache::open_owned_by(&scratch.dir(), &key_path, scratch.me).unwrap();
+        assert_eq!(
+            fields(&reopened.load("bob").unwrap().unwrap()),
+            fields(&bob)
+        );
+        assert_eq!(fs::read(&key_path).unwrap(), key_before);
     }
     #[test]
     fn a_saved_session_survives_a_restart() {
