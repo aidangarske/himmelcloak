@@ -10,8 +10,11 @@ use himmelcloak::cache::TokenCache;
 use serde::Deserialize;
 use std::{
     fs,
+    io::Read,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
+use zeroize::Zeroizing;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,9 +40,44 @@ fn parse_settings(source: &str) -> Result<SessionSettings, &'static str> {
     }
     Ok(settings)
 }
+const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
+fn read_config(path: &Path) -> Result<Zeroizing<String>, &'static str> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| "cannot read configuration")?;
+
+    // Validate the opened file, not a separate path lookup.
+    let metadata = file
+        .metadata()
+        .map_err(|_| "cannot validate configuration")?;
+
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        return Err(
+            "configuration must be a root-owned regular file without group or other write access",
+        );
+    }
+
+    if metadata.len() > MAX_CONFIG_BYTES {
+        return Err("configuration is too large");
+    }
+
+    // The extra byte detects a file growing after the metadata check.
+    let mut source = Zeroizing::new(String::new());
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut source)
+        .map_err(|_| "cannot read configuration")?;
+
+    if source.len() as u64 > MAX_CONFIG_BYTES {
+        return Err("configuration is too large");
+    }
+
+    Ok(source)
+}
 pub fn run(path: &Path) -> Result<(), &'static str> {
-    let source = fs::read_to_string(path).map_err(|_| "cannot read configuration")?;
+    let source = read_config(path)?;
     let settings = parse_settings(&source)?;
     // Opening existing state never creates a missing directory or encryption key.
     let cache = TokenCache::open_existing(&settings.cache_directory, &settings.key_file)
@@ -151,9 +189,11 @@ mod tests {
         run(&config).unwrap();
         assert!(cache.load("alice").unwrap().is_none());
     }
-
     #[test]
     fn clearing_does_not_create_missing_session_state() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
         let directory = TemporaryDirectory::new();
         let cache_directory = directory.0.join("missing-cache");
         let key_file = directory.0.join("missing.key");
@@ -171,5 +211,76 @@ mod tests {
         assert_eq!(run(&config), Err("cannot open private session cache"));
         assert!(!cache_directory.exists());
         assert!(!key_file.exists());
+    }
+    #[test]
+    fn unsafe_configuration_is_rejected_before_removing_a_session() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+
+        let directory = TemporaryDirectory::new();
+        let cache_directory = directory.0.join("cache");
+        let key_file = directory.0.join("token.key");
+        let cache = TokenCache::open(&cache_directory, &key_file).unwrap();
+        cache
+            .store(
+                "alice",
+                &tokens(),
+                SystemTime::now() + Duration::from_secs(3600),
+            )
+            .unwrap();
+        drop(cache);
+
+        let key_before = fs::read(&key_file).unwrap();
+        let config = directory.0.join("himmelcloak.toml");
+        fs::write(
+            &config,
+            format!(
+                "[session]\nusername = \"alice\"\ncache_directory = \"{}\"\nkey_file = \"{}\"\n",
+                cache_directory.display(),
+                key_file.display()
+            ),
+        )
+        .unwrap();
+
+        for mode in [0o620, 0o602, 0o666] {
+            fs::set_permissions(&config, fs::Permissions::from_mode(mode)).unwrap();
+
+            assert_eq!(
+                run(&config),
+                Err(
+                    "configuration must be a root-owned regular file without group or other write access"
+                )
+            );
+
+            let reopened = TokenCache::open_existing(&cache_directory, &key_file).unwrap();
+            assert!(reopened.load("alice").unwrap().is_some());
+            assert_eq!(fs::read(&key_file).unwrap(), key_before);
+        }
+
+        // Even a safe target file must not be accepted through a symlink.
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+        let link = directory.0.join("linked.toml");
+        std::os::unix::fs::symlink(&config, &link).unwrap();
+
+        assert_eq!(run(&link), Err("cannot read configuration"));
+
+        let reopened = TokenCache::open_existing(&cache_directory, &key_file).unwrap();
+        assert!(reopened.load("alice").unwrap().is_some());
+        assert_eq!(fs::read(&key_file).unwrap(), key_before);
+    }
+
+    #[test]
+    fn oversized_configuration_is_rejected() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+
+        let directory = TemporaryDirectory::new();
+        let config = directory.0.join("oversized.toml");
+        fs::write(&config, vec![b' '; super::MAX_CONFIG_BYTES as usize + 1]).unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert_eq!(run(&config), Err("configuration is too large"));
     }
 }
