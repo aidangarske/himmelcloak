@@ -48,3 +48,69 @@ that do not echo sensitive configuration values.
 A live terminal test against the latest Keycloak image must also confirm
 successful fixture-user login and that neither the password nor tokens
 appear in command output.
+
+## Clear session state
+
+`himmelcloak-cli clear-state` removes one user's existing encrypted
+TokenCache entry. It reads `himmelcloak.toml` from the current working
+directory.
+
+Add the following settings, using the username and absolute paths for
+your existing cache:
+
+```toml
+[session]
+username = "alice"
+cache_directory = "/var/lib/himmelcloak/tokens"
+key_file = "/etc/himmelcloak/token.key"
+```
+
+The configuration must be a root-owned regular file, must not be a
+symlink, and must not be writable by group or others. Its maximum size
+is 64 KiB. Running with `sudo` does not change the file's ownership.
+
+On the target Linux system, review the configuration and ensure it is
+in a trusted directory before setting its ownership and permissions:
+
+```bash
+sudo chown root:root himmelcloak.toml
+sudo chmod 0600 himmelcloak.toml
+```
+
+Then run the built binary from that directory:
+
+```bash
+sudo /absolute/path/to/target/debug/himmelcloak-cli clear-state
+```
+
+Build the binary first if needed:
+
+```bash
+scripts/with-native.sh cargo build --locked -p himmelcloak-cli
+```
+
+The command removes only the configured user's cache entry. It does not
+delete the encryption key or other users' entries. Missing cache or key
+paths cause an error rather than creating new state.
+
+This clears local cached state; it does not revoke sessions in Keycloak.
+The `test-login` command remains stateless: it neither saves nor restores
+tokens, and each invocation starts a new authentication flow.
+
+### Clear-state tests
+
+The five behavioral tests require root-owned fixtures. Plain `cargo test`
+explicitly reports them as ignored instead of silently passing without
+exercising the command. Parser tests run without root.
+
+Run the privileged tests in the tester container:
+
+```bash
+make unit-clear-state
+```
+
+Expect five passing tests. This target supports Docker and
+`CONTAINER=podman`, requires no live Keycloak server, and is included in
+`make unit`. Core CI also runs these tests explicitly as root.
+Running the ignored tests without root fails with a clear instruction.
+Production ownership checks remain unchanged.

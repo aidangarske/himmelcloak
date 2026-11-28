@@ -34,3 +34,8 @@ mod test_login;
 
 #[cfg(unix)]
 pub use test_login::run as run_test_login;
+
+#[cfg(unix)]
+mod session_clear;
+#[cfg(unix)]
+pub use session_clear::run as run_clear_state;

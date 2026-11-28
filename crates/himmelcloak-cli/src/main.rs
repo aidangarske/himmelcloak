@@ -84,8 +84,24 @@ fn main() -> ExitCode {
             }
         }
         Ok(Command::ClearState) => {
-            println!("himmelcloak-cli: clear-state is not implemented yet");
-            ExitCode::SUCCESS
+            #[cfg(unix)]
+            {
+                match himmelcloak_cli::run_clear_state(Path::new("himmelcloak.toml")) {
+                    Ok(()) => {
+                        println!("himmelcloak-cli: session state cleared");
+                        ExitCode::SUCCESS
+                    }
+                    Err(message) => {
+                        eprintln!("himmelcloak-cli: clear-state: {message}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("himmelcloak-cli: clear-state requires Unix");
+                ExitCode::FAILURE
+            }
         }
         Err(message) => {
             eprintln!("{message}");

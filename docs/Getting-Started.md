@@ -33,9 +33,17 @@ cargo run --locked -p himmelcloak-cli -- sync-users
 cargo run --locked -p himmelcloak-cli -- clear-state
 ```
 
-`config check` validates TOML syntax only. `clear-state` remains a placeholder.
-`test-login` runs an interactive native password and one-time-code login. `sync-users` reads the
-configured group as described below.
+`config check` validates TOML syntax only.
+`test-login` runs an interactive native password and one-time-code login.
+`sync-users` reads the configured group as described below.
+`clear-state` removes only the explicitly configured user's existing
+encrypted session-cache entry, preserving the encryption key and other
+users' entries. It does not create missing cache or key paths or revoke
+Keycloak sessions. `test-login` remains stateless.
+
+See [Clear session state](../crates/himmelcloak-cli/README.md#clear-session-state)
+for the required `[session]` settings, root-owned configuration requirements,
+and invocation instructions.
 
 ### Test login
 
@@ -212,7 +220,7 @@ both containers run.
 
 | Target | Runs |
 | --- | --- |
-| `make unit` | `cargo test --workspace --tests` in the tester image |
+| `make unit` | Privileged clear-state fixtures as root in the tester container, then `cargo test --locked --workspace --tests`; requires a container runtime that supports running the tester as UID 0 |
 | `make lint` | `cargo fmt --check` and clippy with `-D warnings`, as CI does |
 | `make test-live` | The live Keycloak suite only, leaving Keycloak running |
 | `make test-live-verbose` | The live suite plus client steps and Keycloak's event lines |

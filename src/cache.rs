@@ -35,8 +35,10 @@
 //!
 //! The key file is on the same machine, so this protects copies of the cache (a backup, a copied
 //! directory) but not a reader who is already root. Hardware sealing is the `hsm-seal` package.
+use std::ffi::{CStr, CString};
 use std::fs::{self, DirBuilder, File, Metadata, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -80,9 +82,17 @@ const MALFORMED: Error = Error::Protocol("malformed token cache entry");
 const BEFORE_1970: Error = Error::InvalidConfiguration("time before 1970");
 const TOO_LARGE: Error = Error::InvalidConfiguration("token too large to cache");
 
+/// Removal may already have happened, but syncing its directory failed.
+/// Callers must not describe this as a confirmed, durable deletion.
+pub const REMOVAL_NOT_DURABLE: Error = Error::InvalidConfiguration(
+    "cannot sync token cache directory; deletion may already have occurred",
+);
+
 /// An encrypted, root-only store of verified sessions, one entry per user.
+/// Entry reads, writes, and removals stay in the directory opened and validated
+/// at construction, even if its original pathname or an ancestor alias changes.
 pub struct TokenCache {
-    dir: PathBuf,
+    directory: File,
     key: Zeroizing<[u8; KEY_LEN]>,
     owner: u32,
 }
@@ -96,7 +106,51 @@ impl TokenCache {
     pub fn open(dir: &Path, key_file: &Path) -> Result<Self> {
         Self::open_owned_by(dir, key_file, ROOT)
     }
+    /// Open an existing cache and key without creating either path.
+    /// Missing, symlinked, incorrectly owned, or unsafe paths are refused.
+    pub fn open_existing(dir: &Path, key_file: &Path) -> Result<Self> {
+        Self::open_existing_owned_by(dir, key_file, ROOT)
+    }
 
+    fn open_existing_owned_by(dir: &Path, key_file: &Path, owner: u32) -> Result<Self> {
+        let directory = open_no_follow(dir).map_err(|_| PRIVATE_DIR)?;
+        let metadata = directory.metadata().map_err(|_| PRIVATE_DIR)?;
+        if !metadata.is_dir() || !private(&metadata, owner) {
+            return Err(PRIVATE_DIR);
+        }
+
+        let key_parent = fs::metadata(parent(key_file)).map_err(|_| PRIVATE_KEY_DIR)?;
+        if !key_parent.is_dir() || key_parent.uid() != owner || key_parent.mode() & WRITE_BITS != 0
+        {
+            return Err(PRIVATE_KEY_DIR);
+        }
+        // Entry filenames are lowercase SHA-256 hashes. A key must never occupy
+        // that namespace. Compare directory identities so ancestor aliases
+        // cannot hide an overlap.
+        let entry_name = key_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.len() == 64
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+            });
+
+        if entry_name && key_parent.dev() == metadata.dev() && key_parent.ino() == metadata.ino() {
+            return Err(Error::InvalidConfiguration(
+                "token cache key must not overlap cache entry filenames",
+            ));
+        }
+        let file = open_no_follow(key_file).map_err(|_| PRIVATE_KEY)?;
+        let key = read_key(file, owner)?;
+
+        Ok(Self {
+            directory,
+            key,
+            owner,
+        })
+    }
     /// `open`, for a cache that must belong to `owner` rather than root. Tests use it to run
     /// without root.
     fn open_owned_by(dir: &Path, key_file: &Path, owner: u32) -> Result<Self> {
@@ -105,13 +159,14 @@ impl TokenCache {
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
             Err(_) => return Err(PRIVATE_DIR),
         }
-        let metadata = fs::symlink_metadata(dir).map_err(|_| PRIVATE_DIR)?;
+        let directory = open_no_follow(dir).map_err(|_| PRIVATE_DIR)?;
+        let metadata = directory.metadata().map_err(|_| PRIVATE_DIR)?;
         if !metadata.is_dir() || !private(&metadata, owner) {
             return Err(PRIVATE_DIR);
         }
         let key = load_key(key_file, owner)?;
         Ok(Self {
-            dir: dir.to_owned(),
+            directory,
             key,
             owner,
         })
@@ -158,8 +213,8 @@ impl TokenCache {
 
     fn load_at(&self, user: &str, now: SystemTime) -> Result<Option<Tokens>> {
         let name = crypto::sha256(user.as_bytes())?;
-        let path = self.path(&name);
-        let mut file = match open_no_follow(&path) {
+        let filename = CString::new(hex(&name)).map_err(|_| PRIVATE_ENTRY)?;
+        let mut file = match open_at(&self.directory, &filename, libc::O_RDONLY) {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
             opened => opened.map_err(|_| PRIVATE_ENTRY)?,
         };
@@ -192,19 +247,35 @@ impl TokenCache {
         decode(&plaintext).map(Some)
     }
 
-    /// Delete `user`'s entry, if there is one.
+    /// Delete `user`'s entry relative to the validated directory handle.
+    ///
+    /// Syncs that same directory before reporting success, including when the
+    /// entry is already absent. If syncing fails, deletion may already have
+    /// happened, but its durability across a crash is not confirmed.
     pub fn remove(&self, user: &str) -> Result<()> {
-        let name = crypto::sha256(user.as_bytes())?;
-        match fs::remove_file(self.path(&name)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(_) => Err(PRIVATE_ENTRY),
-        }
+        self.remove_with_sync(user, |directory| directory.sync_all())
     }
 
-    /// An entry is named by the hash of its user's name, so no name can reach outside `dir`.
-    fn path(&self, name: &[u8; 32]) -> PathBuf {
-        self.dir.join(hex(name))
+    fn remove_with_sync(
+        &self,
+        user: &str,
+        sync: impl FnOnce(&File) -> std::io::Result<()>,
+    ) -> Result<()> {
+        let name = crypto::sha256(user.as_bytes())?;
+        let filename = CString::new(hex(&name)).map_err(|_| PRIVATE_ENTRY)?;
+
+        // SAFETY: directory owns a live descriptor. filename is a valid
+        // NUL-terminated, single-component name containing only hex digits.
+        let result = unsafe { libc::unlinkat(self.directory.as_raw_fd(), filename.as_ptr(), 0) };
+
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != ErrorKind::NotFound {
+                return Err(PRIVATE_ENTRY);
+            }
+        }
+
+        sync(&self.directory).map_err(|_| REMOVAL_NOT_DURABLE)
     }
 
     /// Write through a new private file renamed into place, so a crash never leaves a partial
@@ -212,20 +283,65 @@ impl TokenCache {
     /// crash too.
     fn write(&self, name: &[u8; 32], entry: &[u8]) -> Result<()> {
         let suffix = crypto::random_bytes::<8>()?;
-        let temporary = self.dir.join(format!(".{}.tmp", hex(&*suffix)));
-        let written = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .and_then(|mut file| file.write_all(entry).and_then(|()| file.sync_all()))
-            .and_then(|()| fs::rename(&temporary, self.path(name)))
-            .and_then(|()| sync_dir(&self.dir));
+        let temporary =
+            CString::new(format!(".{}.tmp", hex(&*suffix))).map_err(|_| PRIVATE_ENTRY)?;
+        let destination = CString::new(hex(name)).map_err(|_| PRIVATE_ENTRY)?;
+        // Return before cleanup if creation failed: we do not own that name.
+        let mut file = open_at(
+            &self.directory,
+            &temporary,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+        )
+        .map_err(|_| PRIVATE_ENTRY)?;
+        let written = file
+            .write_all(entry)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| {
+                // SAFETY: both names are NUL-terminated single components and
+                // both directory descriptors remain owned by self.
+                let result = unsafe {
+                    libc::renameat(
+                        self.directory.as_raw_fd(),
+                        temporary.as_ptr(),
+                        self.directory.as_raw_fd(),
+                        destination.as_ptr(),
+                    )
+                };
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            })
+            .and_then(|()| self.directory.sync_all());
         if written.is_err() {
-            let _ = fs::remove_file(&temporary);
+            // SAFETY: cleanup uses the same owned directory descriptor and
+            // the temporary single-component name created above.
+            let _ = unsafe { libc::unlinkat(self.directory.as_raw_fd(), temporary.as_ptr(), 0) };
         }
         written.map_err(|_| PRIVATE_ENTRY)
     }
+}
+
+/// Open a generated entry name relative to an owned directory descriptor.
+/// Never follows an entry symlink or blocks on a FIFO; callers validate metadata.
+fn open_at(directory: &File, name: &CStr, flags: libc::c_int) -> std::io::Result<File> {
+    // SAFETY: directory owns a live descriptor and name is NUL-terminated.
+    // All callers supply generated single-component names. The creation mode
+    // is supplied for O_CREAT and ignored for non-creating opens.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            0o600 as libc::mode_t,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: successful openat returned a fresh descriptor owned by this call.
+    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 /// Read the key, or create a new random one when `path` does not exist. The key's directory
@@ -499,6 +615,302 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         fs::symlink_metadata(path).unwrap().mode() & 0o777
+    }
+    #[test]
+    fn existing_cache_opens_without_changing_the_key() {
+        let scratch = Scratch::new();
+        scratch
+            .open()
+            .unwrap()
+            .store("alice", &tokens(), in_an_hour())
+            .unwrap();
+        let key = fs::read(scratch.key()).unwrap();
+
+        let cache =
+            TokenCache::open_existing_owned_by(&scratch.dir(), &scratch.key(), scratch.me).unwrap();
+
+        assert_eq!(
+            fields(&cache.load("alice").unwrap().unwrap()),
+            fields(&tokens())
+        );
+        assert_eq!(fs::read(scratch.key()).unwrap(), key);
+        assert_eq!(
+            TokenCache::open_existing(&scratch.dir(), &scratch.key()).is_ok(),
+            scratch.me == 0
+        );
+    }
+
+    #[test]
+    fn existing_open_does_not_create_missing_paths() {
+        let scratch = Scratch::new();
+
+        assert!(
+            TokenCache::open_existing_owned_by(&scratch.dir(), &scratch.key(), scratch.me,)
+                .is_err()
+        );
+
+        assert!(!scratch.dir().exists());
+        assert!(!scratch.key().exists());
+        assert_eq!(fs::read_dir(&scratch.base).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn existing_open_does_not_recreate_a_removed_key() {
+        let scratch = Scratch::new();
+        scratch.open().unwrap();
+        fs::remove_file(scratch.key()).unwrap();
+
+        assert!(
+            TokenCache::open_existing_owned_by(&scratch.dir(), &scratch.key(), scratch.me,)
+                .is_err()
+        );
+
+        assert!(!scratch.key().exists());
+        assert_eq!(fs::read_dir(&scratch.base).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn existing_open_does_not_recreate_a_removed_directory() {
+        let scratch = Scratch::new();
+        scratch.open().unwrap();
+        let key = fs::read(scratch.key()).unwrap();
+        fs::remove_dir(scratch.dir()).unwrap();
+
+        assert!(
+            TokenCache::open_existing_owned_by(&scratch.dir(), &scratch.key(), scratch.me,)
+                .is_err()
+        );
+
+        assert!(!scratch.dir().exists());
+        assert_eq!(fs::read(scratch.key()).unwrap(), key);
+        assert_eq!(fs::read_dir(&scratch.base).unwrap().count(), 1);
+    }
+    #[test]
+    fn existing_open_rejects_keys_in_the_entry_namespace_through_aliases() {
+        let scratch = Scratch::new();
+        let name = hex(&crypto::sha256(b"alice").unwrap());
+        let key_path = scratch.dir().join(&name);
+
+        // Reproduce the configuration accepted by the original creating API.
+        let cache = TokenCache::open_owned_by(&scratch.dir(), &key_path, scratch.me).unwrap();
+        let bob = tokens();
+        cache.store("bob", &bob, in_an_hour()).unwrap();
+        drop(cache);
+
+        let key_before = fs::read(&key_path).unwrap();
+        let bob_path = scratch.dir().join(hex(&crypto::sha256(b"bob").unwrap()));
+        let bob_before = fs::read(&bob_path).unwrap();
+
+        // The alias is an ancestor, not the final cache-directory component.
+        let alias = scratch.base.join("alias");
+        std::os::unix::fs::symlink(&scratch.base, &alias).unwrap();
+        let alias_dir = alias.join("cache");
+        let alias_key = alias_dir.join(&name);
+
+        for (dir, key) in [
+            (scratch.dir(), key_path.clone()),
+            (scratch.dir(), alias_key.clone()),
+            (alias_dir.clone(), key_path.clone()),
+            (alias_dir, alias_key),
+        ] {
+            assert!(TokenCache::open_existing_owned_by(&dir, &key, scratch.me).is_err());
+            assert_eq!(fs::read(&key_path).unwrap(), key_before);
+            assert_eq!(fs::read(&bob_path).unwrap(), bob_before);
+        }
+
+        // Reopen the original configuration to prove Bob remains decryptable.
+        // Only this test uses the old API to inspect the rejected layout.
+        let reopened = TokenCache::open_owned_by(&scratch.dir(), &key_path, scratch.me).unwrap();
+        assert_eq!(
+            fields(&reopened.load("bob").unwrap().unwrap()),
+            fields(&bob)
+        );
+        assert_eq!(fs::read(&key_path).unwrap(), key_before);
+    }
+    #[test]
+    fn removal_stays_in_the_validated_directory_after_path_replacement() {
+        let scratch = Scratch::new();
+        let original = scratch.open().unwrap();
+        original.store("alice", &tokens(), in_an_hour()).unwrap();
+        original.store("bob", &tokens(), in_an_hour()).unwrap();
+        drop(original);
+
+        let cache =
+            TokenCache::open_existing_owned_by(&scratch.dir(), &scratch.key(), scratch.me).unwrap();
+
+        let name = hex(&crypto::sha256(b"alice").unwrap());
+        let bob_name = hex(&crypto::sha256(b"bob").unwrap());
+        let moved = scratch.base.join("original-cache");
+        let bob_before = fs::read(scratch.dir().join(&bob_name)).unwrap();
+        let key_before = fs::read(scratch.key()).unwrap();
+
+        fs::rename(scratch.dir(), &moved).unwrap();
+
+        let replacement = scratch.open().unwrap();
+        replacement.store("alice", &tokens(), in_an_hour()).unwrap();
+        drop(replacement);
+        let replacement_before = fs::read(scratch.dir().join(&name)).unwrap();
+        fs::set_permissions(scratch.dir(), fs::Permissions::from_mode(0o755)).unwrap();
+
+        cache.remove("alice").unwrap();
+
+        assert!(!moved.join(&name).exists());
+        assert_eq!(fs::read(moved.join(&bob_name)).unwrap(), bob_before);
+        assert_eq!(
+            fs::read(scratch.dir().join(&name)).unwrap(),
+            replacement_before
+        );
+        assert_eq!(fs::read(scratch.key()).unwrap(), key_before);
+
+        cache.remove("alice").unwrap();
+        assert_eq!(
+            fs::read(scratch.dir().join(&name)).unwrap(),
+            replacement_before
+        );
+    }
+
+    #[test]
+    fn removal_stays_in_the_validated_directory_after_ancestor_alias_changes() {
+        let original = Scratch::new();
+        let replacement = Scratch::new();
+
+        let first = original.open().unwrap();
+        first.store("alice", &tokens(), in_an_hour()).unwrap();
+        drop(first);
+
+        let second = replacement.open().unwrap();
+        second.store("alice", &tokens(), in_an_hour()).unwrap();
+        drop(second);
+
+        let alias = original.base.join("alias");
+        std::os::unix::fs::symlink(&original.base, &alias).unwrap();
+        let cache =
+            TokenCache::open_existing_owned_by(&alias.join("cache"), &original.key(), original.me)
+                .unwrap();
+
+        let name = hex(&crypto::sha256(b"alice").unwrap());
+        let replacement_before = fs::read(replacement.dir().join(&name)).unwrap();
+
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&replacement.base, &alias).unwrap();
+
+        cache.remove("alice").unwrap();
+
+        assert!(!original.dir().join(&name).exists());
+        assert_eq!(
+            fs::read(replacement.dir().join(&name)).unwrap(),
+            replacement_before
+        );
+    }
+
+    #[test]
+    fn removal_reports_directory_sync_failure_and_retry_syncs_again() {
+        let scratch = Scratch::new();
+        let cache = scratch.open().unwrap();
+        cache.store("alice", &tokens(), in_an_hour()).unwrap();
+
+        let result = cache.remove_with_sync("alice", |_| {
+            Err(std::io::Error::other("injected directory sync failure"))
+        });
+
+        assert_eq!(
+            result.err(),
+            Some(Error::InvalidConfiguration(
+                "cannot sync token cache directory; deletion may already have occurred"
+            ))
+        );
+        assert!(cache.load("alice").unwrap().is_none());
+
+        let mut synced = false;
+        cache
+            .remove_with_sync("alice", |directory| {
+                synced = true;
+                directory.sync_all()
+            })
+            .unwrap();
+        assert!(synced);
+    }
+    #[test]
+    fn mixed_operations_stay_in_one_directory_after_path_or_alias_replacement() {
+        for use_existing in [false, true] {
+            for use_alias in [false, true] {
+                let original = Scratch::new();
+                let replacement = Scratch::new();
+                original
+                    .open()
+                    .unwrap()
+                    .store("alice", &tokens(), in_an_hour())
+                    .unwrap();
+                replacement
+                    .open()
+                    .unwrap()
+                    .store("alice", &tokens(), in_an_hour())
+                    .unwrap();
+
+                let alias = original.base.join("alias");
+                let dir = if use_alias {
+                    std::os::unix::fs::symlink(&original.base, &alias).unwrap();
+                    alias.join("cache")
+                } else {
+                    original.dir()
+                };
+                let cache = if use_existing {
+                    TokenCache::open_existing_owned_by(&dir, &original.key(), original.me)
+                } else {
+                    TokenCache::open_owned_by(&dir, &original.key(), original.me)
+                }
+                .unwrap();
+                let key_before = fs::read(original.key()).unwrap();
+                let replacement_key_before = fs::read(replacement.key()).unwrap();
+                let moved = original.base.join("moved-cache");
+                let (original_dir, replacement_dir) = if use_alias {
+                    fs::remove_file(&alias).unwrap();
+                    std::os::unix::fs::symlink(&replacement.base, &alias).unwrap();
+                    (original.dir(), replacement.dir())
+                } else {
+                    fs::rename(original.dir(), &moved).unwrap();
+                    fs::rename(replacement.dir(), original.dir()).unwrap();
+                    (moved, original.dir())
+                };
+                let alice_name = hex(&crypto::sha256(b"alice").unwrap());
+                let bob_name = hex(&crypto::sha256(b"bob").unwrap());
+                let sentinel = fs::read(replacement_dir.join(&alice_name)).unwrap();
+
+                // Read the original session, write new and replacement entries,
+                // then remove and load again on the SAME opened cache object.
+                assert_eq!(
+                    fields(&cache.load("alice").unwrap().unwrap()),
+                    fields(&tokens())
+                );
+                let mut updated = tokens();
+                updated.access_token = "updated-original-session".to_owned();
+                cache.store("alice", &updated, in_an_hour()).unwrap();
+                cache.store("bob", &tokens(), in_an_hour()).unwrap();
+                assert_eq!(
+                    fields(&cache.load("alice").unwrap().unwrap()),
+                    fields(&updated)
+                );
+                assert!(original_dir.join(&bob_name).exists());
+                assert!(!replacement_dir.join(&bob_name).exists());
+                cache.remove("alice").unwrap();
+                assert!(cache.load("alice").unwrap().is_none());
+                assert!(!original_dir.join(&alice_name).exists());
+                assert_eq!(
+                    fields(&cache.load("bob").unwrap().unwrap()),
+                    fields(&tokens())
+                );
+                assert_eq!(
+                    fs::read(replacement_dir.join(&alice_name)).unwrap(),
+                    sentinel
+                );
+                cache.remove("bob").unwrap();
+                assert!(cache.load("bob").unwrap().is_none());
+                assert_eq!(fs::read_dir(&original_dir).unwrap().count(), 0);
+                assert_eq!(fs::read_dir(&replacement_dir).unwrap().count(), 1);
+                assert_eq!(fs::read(original.key()).unwrap(), key_before);
+                assert_eq!(fs::read(replacement.key()).unwrap(), replacement_key_before);
+            }
+        }
     }
 
     #[test]
