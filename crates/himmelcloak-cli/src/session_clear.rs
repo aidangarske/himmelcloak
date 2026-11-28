@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 //! Clear one explicitly configured user's encrypted session cache entry.
-use himmelcloak::cache::TokenCache;
+use himmelcloak::cache::{TokenCache, REMOVAL_NOT_DURABLE};
 use serde::Deserialize;
 use std::{
     fs,
@@ -77,14 +77,25 @@ fn read_config(path: &Path) -> Result<Zeroizing<String>, &'static str> {
     Ok(source)
 }
 pub fn run(path: &Path) -> Result<(), &'static str> {
+    run_with_remove(path, |cache, username| cache.remove(username))
+}
+
+fn run_with_remove(
+    path: &Path,
+    remove: impl FnOnce(&TokenCache, &str) -> Result<(), himmelcloak::Error>,
+) -> Result<(), &'static str> {
     let source = read_config(path)?;
     let settings = parse_settings(&source)?;
     // Opening existing state never creates a missing directory or encryption key.
     let cache = TokenCache::open_existing(&settings.cache_directory, &settings.key_file)
         .map_err(|_| "cannot open private session cache")?;
-    cache
-        .remove(&settings.username)
-        .map_err(|_| "cannot clear cached session")
+    remove(&cache, &settings.username).map_err(|error| {
+        if error == REMOVAL_NOT_DURABLE {
+            "cached session may already have been removed; directory sync failed, so crash durability is uncertain"
+        } else {
+            "cannot clear cached session"
+        }
+    })
 }
 
 #[cfg(test)]
@@ -288,6 +299,59 @@ mod tests {
         let reopened = TokenCache::open_existing(&cache_directory, &key_file).unwrap();
         assert!(reopened.load("alice").unwrap().is_some());
         assert_eq!(fs::read(&key_file).unwrap(), key_before);
+    }
+
+    #[test]
+    fn command_warns_when_removal_durability_is_uncertain() {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let directory = TemporaryDirectory::new();
+        let cache_directory = directory.0.join("cache");
+        let key_file = directory.0.join("token.key");
+        let cache = TokenCache::open(&cache_directory, &key_file).unwrap();
+        cache
+            .store(
+                "alice",
+                &tokens(),
+                SystemTime::now() + Duration::from_secs(3600),
+            )
+            .unwrap();
+        drop(cache);
+        let key_before = fs::read(&key_file).unwrap();
+        let config = directory.0.join("himmelcloak.toml");
+        fs::write(
+            &config,
+            format!(
+                "[session]\nusername = \"alice\"\ncache_directory = \"{}\"\nkey_file = \"{}\"\n",
+                cache_directory.display(),
+                key_file.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+
+        // Inject the cache's post-unlink failure at the command boundary.
+        // The real cache sync-failure test covers production error generation.
+        let result = super::run_with_remove(&config, |cache, username| {
+            cache.remove(username)?;
+            Err(himmelcloak::cache::REMOVAL_NOT_DURABLE)
+        });
+        assert_eq!(
+            result,
+            Err("cached session may already have been removed; directory sync failed, so crash durability is uncertain")
+        );
+        let reopened = TokenCache::open_existing(&cache_directory, &key_file).unwrap();
+        assert!(reopened.load("alice").unwrap().is_none());
+        assert_eq!(fs::read(&key_file).unwrap(), key_before);
+
+        // Other errors remain fixed and secret-safe, without a false warning.
+        let result = super::run_with_remove(&config, |_, _| {
+            Err(himmelcloak::Error::Transport(
+                "DO-NOT-PRINT-SECRET".to_owned(),
+            ))
+        });
+        assert_eq!(result, Err("cannot clear cached session"));
     }
 
     #[test]
