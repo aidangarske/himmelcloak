@@ -96,3 +96,21 @@ paths cause an error rather than creating new state.
 This clears local cached state; it does not revoke sessions in Keycloak.
 The `test-login` command remains stateless: it neither saves nor restores
 tokens, and each invocation starts a new authentication flow.
+
+### Clear-state tests
+
+The five behavioral tests require root-owned fixtures. Plain `cargo test`
+explicitly reports them as ignored instead of silently passing without
+exercising the command. Parser tests run without root.
+
+Run the privileged tests in the tester container:
+
+```bash
+make unit-clear-state
+```
+
+Expect five passing tests. This target supports Docker and
+`CONTAINER=podman`, requires no live Keycloak server, and is included in
+`make unit`. Core CI also runs these tests explicitly as root.
+Running the ignored tests without root fails with a clear instruction.
+Production ownership checks remain unchanged.

@@ -114,6 +114,15 @@ mod tests {
 
     static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
+    fn require_root() {
+        // SAFETY: geteuid takes no arguments and has no preconditions.
+        assert_eq!(
+            unsafe { libc::geteuid() },
+            0,
+            "root-owned fixture tests must run with make unit-clear-state"
+        );
+    }
+
     struct TemporaryDirectory(PathBuf);
 
     impl TemporaryDirectory {
@@ -169,10 +178,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires root-owned fixtures; run make unit-clear-state"]
     fn clears_only_the_selected_session_and_preserves_the_key() {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
-        }
+        require_root();
 
         let directory = TemporaryDirectory::new();
         let cache_directory = directory.0.join("cache");
@@ -221,10 +229,9 @@ mod tests {
         assert_eq!(fs::read_dir(&cache_directory).unwrap().count(), 1);
     }
     #[test]
+    #[ignore = "requires root-owned fixtures; run make unit-clear-state"]
     fn clearing_does_not_create_missing_session_state() {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
-        }
+        require_root();
         let directory = TemporaryDirectory::new();
         let cache_directory = directory.0.join("missing-cache");
         let key_file = directory.0.join("missing.key");
@@ -239,15 +246,15 @@ mod tests {
         )
         .unwrap();
 
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(run(&config), Err("cannot open private session cache"));
         assert!(!cache_directory.exists());
         assert!(!key_file.exists());
     }
     #[test]
+    #[ignore = "requires root-owned fixtures; run make unit-clear-state"]
     fn unsafe_configuration_is_rejected_before_removing_a_session() {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
-        }
+        require_root();
 
         let directory = TemporaryDirectory::new();
         let cache_directory = directory.0.join("cache");
@@ -274,6 +281,7 @@ mod tests {
         )
         .unwrap();
 
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
         for mode in [0o620, 0o602, 0o666] {
             fs::set_permissions(&config, fs::Permissions::from_mode(mode)).unwrap();
 
@@ -302,10 +310,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires root-owned fixtures; run make unit-clear-state"]
     fn command_warns_when_removal_durability_is_uncertain() {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
-        }
+        require_root();
         let directory = TemporaryDirectory::new();
         let cache_directory = directory.0.join("cache");
         let key_file = directory.0.join("token.key");
@@ -355,10 +362,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires root-owned fixtures; run make unit-clear-state"]
     fn oversized_configuration_is_rejected() {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
-        }
+        require_root();
 
         let directory = TemporaryDirectory::new();
         let config = directory.0.join("oversized.toml");

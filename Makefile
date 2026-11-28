@@ -1,6 +1,6 @@
 .PHONY: build test demo clean help image unit lint shell test-live test-live-verbose \
 	oracle-up oracle-down pam-smoke native local-build local-all-features \
-	local-test local-lint fmt test-distros
+	local-test local-lint fmt test-distros unit-clear-state
 .DEFAULT_GOAL := build
 
 DISTROS = debian-12 ubuntu-24.04 opensuse-leap-16.0 opensuse-tumbleweed \
@@ -60,8 +60,11 @@ help: ## Show every target
 image: ## Build the tester image for the default or DISTRO distribution
 	tests/keycloak/tester-image.sh
 
-unit: image ## Unit and integration tests only
+unit: unit-clear-state ## Unit and integration tests, including privileged clear-state tests
 	$(IN_DOCKER) cargo test --locked --workspace --tests
+
+unit-clear-state: image ## Run the explicitly ignored clear-state tests as root in the container
+	$(COMPOSE) run --rm --no-deps --user 0:0 --entrypoint /usr/bin/env tester cargo test --locked -p himmelcloak-cli --lib session_clear::tests:: -- --ignored
 
 lint: image ## rustfmt and clippy, as CI runs them
 	$(IN_DOCKER) cargo fmt --all --check
