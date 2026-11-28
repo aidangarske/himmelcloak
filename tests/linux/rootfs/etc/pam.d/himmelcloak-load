@@ -1,0 +1,6 @@
+# Himmelcloak disposable test system (HC-45): private service used only by
+# check-system.sh to prove the installed module loads. With "required", a load
+# error shows as "Module is unknown" instead of being skipped as it would be
+# under sshd's "sufficient".
+auth     required    pam_himmelcloak.so
+account  required    pam_permit.so
