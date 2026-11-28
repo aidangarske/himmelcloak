@@ -224,3 +224,17 @@ Compose. Stop the local fixture with Ctrl+C in its terminal. See the
 [Admin REST API](https://www.keycloak.org/docs-api/latest/rest-api/index.html)
 and [server administration guide](https://www.keycloak.org/docs/latest/server_admin/index.html)
 for the group-member endpoint and service-account roles.
+
+## NSS module
+
+On GNU/Linux, `make nss-module` builds `target/release/libnss_himmelcloak.so.2`
+(or under `CARGO_TARGET_DIR`). The passwd and group lookups by name and ID
+currently return `NSS_STATUS_NOTFOUND` with `ENOENT`. HC-52 connects them to
+the account snapshot written by `sync-users`.
+
+Run `make nss-smoke` with the pinned Rust toolchain, `strace`, `readelf`, and
+glibc's `getent`. The test traces the lookup unit tests for network syscalls,
+then runs `getent` in a temporary root with its own `nsswitch.conf`. It needs
+permission to create a chroot, either as root in a disposable Linux environment
+or through unprivileged user namespaces. Only the temporary root uses the test
+configuration. No Keycloak server is needed.
