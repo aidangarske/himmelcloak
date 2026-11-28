@@ -208,17 +208,26 @@ fn cli_test_login_completes_a_password_login_end_to_end() {
     );
     assert_no_secrets(&output, PASSWORD);
     trace("the CLI printed login succeeded and exited 0, without the password or tokens");
+}
 
-    trace("run test-login with a wrong password");
+#[test]
+#[ignore = "requires a live Keycloak server and test CA"]
+fn cli_test_login_rejects_a_wrong_password_without_leaking_it() {
+    let dir = work_dir("wrong-password");
+
     let (status, output) = test_login(&dir, "alice", WRONG_PASSWORD);
+
     assert_eq!(
         status.code(),
         Some(1),
         "a wrong password must fail: {output}"
     );
     assert!(output.contains("himmelcloak-cli: login failed"), "{output}");
+    assert!(
+        !output.contains("himmelcloak-cli: login succeeded"),
+        "a rejected login must not report success"
+    );
     assert_no_secrets(&output, WRONG_PASSWORD);
-    trace("the CLI printed login failed and exited 1, without the password");
 }
 
 #[test]

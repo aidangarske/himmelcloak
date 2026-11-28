@@ -29,7 +29,8 @@ fn check_config(path: &Path) -> Result<(), String> {
     let contents = fs::read_to_string(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
 
-    parse_config(&contents).map_err(|error| format!("invalid {}: {error}", path.display()))
+    parse_config(&contents)
+        .map_err(|_| format!("invalid {}: malformed TOML configuration", path.display()))
 }
 
 fn main() -> ExitCode {
