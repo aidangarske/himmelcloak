@@ -149,6 +149,19 @@ class LinuxRunnerTests(unittest.TestCase):
         self.assertIn("TESTER_IMAGE=himmelcloak-tester:ci", build)
         self.assertIn("--platform linux/amd64", run)
 
+    def test_shell_mode_uses_a_tty_and_preserves_failure_status(self):
+        result = self.run_runner(mode="shell", check_status=3)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assert_torn_down(result)
+        self.assertTrue(
+            any(call.startswith("exec --interactive --tty ") for call in self.calls()),
+            self.calls(),
+        )
+        self.assertFalse(
+            any("check-system.sh" in call for call in self.calls()),
+            "shell mode must not run the checks",
+        )
+
     def test_missing_tester_image_stops_before_building(self):
         result = self.run_runner(image="missing")
         self.assertEqual(result.returncode, 1)
