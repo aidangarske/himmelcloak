@@ -220,7 +220,7 @@ both containers run.
 
 | Target | Runs |
 | --- | --- |
-| `make unit` | `cargo test --workspace --tests` in the tester image |
+| `make unit` | Privileged clear-state fixtures as root in the tester container, then `cargo test --locked --workspace --tests`; requires a container runtime that supports running the tester as UID 0 |
 | `make lint` | `cargo fmt --check` and clippy with `-D warnings`, as CI does |
 | `make test-live` | The live Keycloak suite only, leaving Keycloak running |
 | `make test-live-verbose` | The live suite plus client steps and Keycloak's event lines |
