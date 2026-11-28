@@ -35,8 +35,10 @@ RUNNER = ROOT / "tests" / "linux" / "run.sh"
 
 FAKE_ENGINE = r"""#!/usr/bin/env bash
 # Behavior comes from FAKE_* variables; every call is appended to $FAKE_DIR/calls.
+# $FAKE_DIR/container holds the ID of the one container this engine started.
 printf '%s\n' "$*" >> "$FAKE_DIR/calls"
 state="$FAKE_DIR/container"
+is_ours() { [[ -s "$state" && "$(cat "$state")" == "$1" ]]; }
 case "$1" in
     image)
         [[ "${FAKE_IMAGE:-present}" == present ]] || exit 1
@@ -46,24 +48,25 @@ case "$1" in
         shift
         while [[ "$1" == --* ]]; do
             case "$1" in
-                --name) echo "$2" > "$state"; shift ;;
+                --name) name=$2; shift ;;
                 --platform) shift ;;
             esac
             shift
         done
-        echo fake-container-id ;;
+        echo "fake-id-$name" > "$state"
+        cat "$state" ;;
     exec)
-        [[ -s "$state" ]] || exit 1
         shift
         while [[ "$1" == --* ]]; do shift; done
+        is_ours "$1" || exit 1
         shift
         if [[ "$1" == test ]]; then
             [[ "${FAKE_SSHD:-up}" == up ]]
             exit
         fi
         exit "${FAKE_CHECK_STATUS:-0}" ;;
-    rm) rm -f "$state" ;;
-    container) [[ -s "$state" ]] ;;
+    rm) is_ours "$3" && rm -f "$state"; exit 0 ;;
+    container) is_ours "$3" ;;
     logs) echo "fake sshd log" ;;
     *) exit 64 ;;
 esac
@@ -136,10 +139,20 @@ class LinuxRunnerTests(unittest.TestCase):
         self.assertIn("sshd did not start", result.stderr)
         self.assert_torn_down(result)
 
-    def test_build_failure_starts_nothing(self):
+    def test_build_failure_starts_and_removes_nothing(self):
         result = self.run_runner(build_status=1)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(call.startswith("run ") for call in self.calls()))
+        self.assertFalse(
+            any(call.startswith("rm ") for call in self.calls()),
+            "nothing was started, so nothing (not even a same-named container) may be removed",
+        )
+
+    def test_cleanup_targets_the_started_container_id_not_its_name(self):
+        self.run_runner(check_status=1)
+        for call in self.calls():
+            if call.startswith(("rm ", "container inspect", "exec ")):
+                self.assertIn("fake-id-himmelcloak-linux-", call)
 
     def test_both_stages_and_the_container_use_the_tester_platform(self):
         self.run_runner()

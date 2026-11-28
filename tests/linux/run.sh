@@ -40,9 +40,14 @@ if ! platform=$("$engine" image inspect --format '{{.Os}}/{{.Architecture}}' "$t
     exit 1
 fi
 
+# Only the container this run started is ever removed, by the ID the engine
+# returned, so a failed build cannot remove another container with this name.
+container=""
 # shellcheck disable=SC2317 # called by the EXIT trap
 teardown() {
-    "$engine" rm --force "$name" >/dev/null 2>&1 || true
+    if [[ -n "$container" ]]; then
+        "$engine" rm --force "$container" >/dev/null 2>&1 || true
+    fi
 }
 trap teardown EXIT
 
@@ -57,17 +62,21 @@ printf 'Building the disposable Linux test system...\n'
     "$repo"
 
 printf 'Booting %s...\n' "$name"
-"$engine" run --detach --platform "$platform" --name "$name" "$system_image" >/dev/null
+container=$("$engine" run --detach --platform "$platform" --name "$name" "$system_image")
+if [[ -z "$container" ]]; then
+    printf 'The container engine did not return a container ID.\n' >&2
+    exit 1
+fi
 # A Bash loop, not seq: stock macOS has no seq.
 for ((attempt = 1; attempt <= boot_timeout; attempt++)); do
-    if "$engine" exec "$name" test -s /run/sshd.pid; then
+    if "$engine" exec "$container" test -s /run/sshd.pid; then
         break
     fi
     sleep 1
 done
-if ! "$engine" exec "$name" test -s /run/sshd.pid; then
+if ! "$engine" exec "$container" test -s /run/sshd.pid; then
     printf 'sshd did not start in the test system:\n' >&2
-    "$engine" logs "$name" >&2 || true
+    "$engine" logs "$container" >&2 || true
     exit 1
 fi
 
@@ -75,14 +84,14 @@ status=0
 if [[ "$mode" == shell ]]; then
     printf 'Recovery account: recovery / local-recovery-test-only\n'
     printf 'Try: ssh -o PreferredAuthentications=keyboard-interactive recovery@127.0.0.1\n'
-    "$engine" exec --interactive --tty "$name" bash || status=$?
+    "$engine" exec --interactive --tty "$container" bash || status=$?
 else
-    "$engine" exec "$name" /usr/local/libexec/himmelcloak/check-system.sh || status=$?
+    "$engine" exec "$container" /usr/local/libexec/himmelcloak/check-system.sh || status=$?
 fi
 
 printf '\nTearing down %s...\n' "$name"
-"$engine" rm --force "$name" >/dev/null
-if "$engine" container inspect "$name" >/dev/null 2>&1; then
+"$engine" rm --force "$container" >/dev/null
+if "$engine" container inspect "$container" >/dev/null 2>&1; then
     printf 'Teardown failed: %s still exists\n' "$name" >&2
     exit 1
 fi

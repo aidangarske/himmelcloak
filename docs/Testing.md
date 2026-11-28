@@ -281,7 +281,8 @@ denies everyone.
 | `pam_himmelcloak.so` | installed and the first `auth` module for sshd |
 | Installed module through a private `required` service (`pamtester`) | loads and denies (`Authentication failure`, not `Module is unknown`) |
 | SSH keyboard-interactive as `recovery` with its local password | signs in |
-| Wrong password, plain `password` authentication, or a Keycloak-mapped name on the local path | refused |
+| Wrong password, or plain `password` authentication | refused |
+| Synced user `alice` (confirmed in the snapshot and not a local account) on the local password path | refused |
 
 The recovery login passing proves the account still works while
 `pam_himmelcloak` denies. Because sshd lists the module as `sufficient`, a module
@@ -294,4 +295,5 @@ fixture exist only inside the image. Containers run on every pull request;
 nightly VMs are planned for console login and other cases containers cannot
 cover. `tests/ci/test_linux_runner.py` checks the runner itself offline with a
 fake container engine: a failing check, an sshd that never starts, or a failed
-build still ends with the container removed and the original status returned.
+build still ends with the container removed and the original status returned, and only
+the container that run started is ever removed, by the ID the engine returned.

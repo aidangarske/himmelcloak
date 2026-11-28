@@ -129,10 +129,16 @@ if ssh_as "$recovery" "$password" password true >/dev/null 2>&1; then
 else
     pass "plain password authentication is disabled (keyboard-interactive only)"
 fi
-if ssh_as alice "$password" keyboard-interactive true >/dev/null 2>&1; then
+# SSH rejects unknown users too, so this only means something if alice really
+# is a synced (Keycloak-mapped) account in the snapshot and not a local one.
+if ! jq -e '.users | any(.username == "alice")' "$snapshot" >/dev/null 2>&1; then
+    fail "the snapshot fixture has no synced user alice to test"
+elif grep -q '^alice:' /etc/passwd; then
+    fail "alice is a local account, so she cannot stand in for a synced one"
+elif ssh_as alice "$password" keyboard-interactive true >/dev/null 2>&1; then
     fail "the Keycloak-mapped name alice signed in locally"
 else
-    pass "a Keycloak-mapped name cannot use the local password path"
+    pass "synced user alice (in the snapshot, not local) cannot use the local password path"
 fi
 
 printf '\n'
