@@ -224,3 +224,76 @@ Compose. Stop the local fixture with Ctrl+C in its terminal. See the
 [Admin REST API](https://www.keycloak.org/docs-api/latest/rest-api/index.html)
 and [server administration guide](https://www.keycloak.org/docs/latest/server_admin/index.html)
 for the group-member endpoint and service-account roles.
+
+## NSS module
+
+On GNU/Linux, `make nss-module` builds `target/release/libnss_himmelcloak.so.2`
+(or under `CARGO_TARGET_DIR`). The passwd and group lookups by name and ID
+currently return `NSS_STATUS_NOTFOUND` with `ENOENT`. HC-52 connects them to
+the account snapshot written by `sync-users`.
+
+Run `make nss-smoke` with the pinned Rust toolchain, `strace`, `readelf`, and
+glibc's `getent`. The test traces the lookup unit tests for network syscalls,
+then runs `getent` in a temporary root with its own `nsswitch.conf`. It needs
+permission to create a chroot, either as root in a disposable Linux environment
+or through unprivileged user namespaces. Only the temporary root uses the test
+configuration. No Keycloak server is needed.
+
+## Disposable Linux test systems
+
+Login changes are only tested in disposable systems, never on a member's own
+computer. `make linux-test` builds a Debian 12 container with OpenSSH, the
+Himmelcloak PAM module first in the sshd `auth` stack, and a separate local
+recovery account. It boots the container, runs the checks below inside it, then
+removes it and confirms it is gone. `make linux-shell` boots the same system and
+opens a shell in it for manual PAM and SSH testing; it is removed when you exit.
+Both work with `CONTAINER=podman`. The system is always Debian 12, so the module
+is always built with the default Debian 12 tester image, on the same platform as
+the final image; `DISTRO` is refused for these targets.
+
+The PAM and sshd settings follow the charter's example for a disposable test
+system (`tests/linux/rootfs/`):
+
+```text
+auth     sufficient  pam_himmelcloak.so
+auth     required    pam_unix.so try_first_pass
+account  required    pam_unix.so
+session  required    pam_unix.so
+```
+
+```text
+UsePAM yes
+KbdInteractiveAuthentication yes
+PasswordAuthentication no
+```
+
+The `account` line for `pam_himmelcloak` is added by HC-42, once the module
+returns `PAM_IGNORE` for local-only accounts; until then its account stage
+denies everyone.
+
+| Check | Expected |
+| --- | --- |
+| Synced snapshot fixture (`/var/lib/himmelcloak/users.json`) | present and a valid version-1 sync snapshot |
+| `recovery` is in `/etc/passwd` | present |
+| Its UID | above 0 and below the snapshot's `uid_min` (200000) |
+| Its groups | not the snapshot's GID (200000, `himmelcloak`) |
+| Snapshot users, group members, reservations | none name `recovery` or use its UID |
+| `pam_himmelcloak.so` | installed and the first `auth` module for sshd |
+| Installed module through a private `required` service (`pamtester`) | loads and denies (`Authentication failure`, not `Module is unknown`) |
+| SSH keyboard-interactive as `recovery` with its local password | signs in |
+| Wrong password, or plain `password` authentication | refused |
+| Synced user `alice` (confirmed in the snapshot and not a local account) on the local password path | refused |
+
+The recovery login passing proves the account still works while
+`pam_himmelcloak` denies. Because sshd lists the module as `sufficient`, a module
+that fails to load would be skipped silently, so the separate `pamtester` check
+proves the installed release module really loads. The module needs `libbrotli1`
+and `zlib1g` at runtime (libcurl is built with their decoders), so the image
+installs them and its build fails with the missing names if any library the
+module links against is absent. The recovery password (`local-recovery-test-only`) and the snapshot
+fixture exist only inside the image. Containers run on every pull request;
+nightly VMs are planned for console login and other cases containers cannot
+cover. `tests/ci/test_linux_runner.py` checks the runner itself offline with a
+fake container engine: a failing check, an sshd that never starts, or a failed
+build still ends with the container removed and the original status returned, and only
+the container that run started is ever removed, by the ID the engine returned.

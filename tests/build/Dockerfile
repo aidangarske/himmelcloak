@@ -3,7 +3,7 @@ FROM docker.io/library/rust:1.100.0-bookworm
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update && apt-get install -y --no-install-recommends \
     autoconf automake ca-certificates clang cmake git libclang-dev libtool \
-    make pkg-config perl qrencode \
+    make pkg-config perl qrencode strace \
     && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/build-native.sh /usr/local/bin/himmelcloak-build-native

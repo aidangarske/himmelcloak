@@ -1,6 +1,6 @@
 .PHONY: build test demo clean help image unit lint shell test-live test-live-verbose \
-	oracle-up oracle-down pam-smoke native local-build local-all-features \
-	local-test local-lint fmt test-distros unit-clear-state
+       oracle-up oracle-down pam-smoke linux-test linux-shell linux-no-distro native local-build local-all-features \
+       local-test local-lint fmt test-distros nss-module nss-smoke unit-clear-state
 .DEFAULT_GOAL := build
 
 DISTROS = debian-12 ubuntu-24.04 opensuse-leap-16.0 opensuse-tumbleweed \
@@ -88,6 +88,20 @@ oracle-down: clean
 pam-smoke: ## Load the PAM module in a container
 	bash crates/pam_himmelcloak/tests/pam-load-smoke.sh "$(CURDIR)"
 
+# The test system is always Debian 12 (built with the default tester image), so
+# refuse DISTRO before spending minutes building another distribution's image.
+LINUX_PREREQ := $(if $(DISTRO),linux-no-distro,image)
+
+linux-test: $(LINUX_PREREQ) ## Boot a disposable Linux test system, check its recovery account and SSH, then remove it
+	tests/linux/run.sh test
+
+linux-shell: $(LINUX_PREREQ) ## Open a shell in a disposable Linux test system (removed when you exit)
+	tests/linux/run.sh shell
+
+linux-no-distro:
+	@echo "The disposable test system is always Debian 12; run make linux-test without DISTRO." >&2
+	@exit 2
+
 ##@ Native Linux builds without Docker (needs autotools, libtool, pkg-config, clang, rustup)
 
 native: ## Build pinned wolfSSL and curl into .native
@@ -108,3 +122,14 @@ local-lint: native ## clippy and rustfmt on the host
 
 fmt: ## Format the code on the host
 	cargo fmt --all
+
+##@ NSS module (native GNU/Linux)
+
+NSS_TARGET_DIR = $(or $(CARGO_TARGET_DIR),target)
+
+nss-module: ## Build the NSS shared library with its glibc ABI filename
+	cargo build --locked --release -p nss_himmelcloak --target-dir "$(NSS_TARGET_DIR)"
+	install -m 0755 "$(NSS_TARGET_DIR)/release/libnss_himmelcloak.so" "$(NSS_TARGET_DIR)/release/libnss_himmelcloak.so.2"
+
+nss-smoke: nss-module ## Trace the unit tests and load the module with a test nsswitch.conf
+	bash crates/nss_himmelcloak/tests/load-smoke.sh "$(NSS_TARGET_DIR)/release/libnss_himmelcloak.so.2"
